@@ -1,0 +1,15 @@
+{
+  "mae_hours": 6959.223741319444,
+  "rmse_hours": 30822.650150746438,
+  "r2": 0.732721119299541,
+  "auc_90d": 1.0,
+  "accuracy_90d": 1.0,
+  "n_test": 64,
+  "feature_names": [
+    "avg_wall_temp_c",
+    "consumed_life_fraction",
+    "installed_at_days_ago",
+    "row",
+    "col"
+  ]
+}

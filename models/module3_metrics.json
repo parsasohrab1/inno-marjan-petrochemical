@@ -1,0 +1,13 @@
+{
+  "eff_rmse": 0.009500128353303482,
+  "eff_r2": 0.9905558149106696,
+  "eff_mae": 0.007232417349370943,
+  "n_test": 2714,
+  "feature_names": [
+    "sc_ratio",
+    "t_out_c",
+    "feed_flow_nm3h",
+    "cat_age",
+    "fuel_flow_nm3h"
+  ]
+}

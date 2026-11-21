@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing / coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.cache
+
+# Local runtime data (SQLite, logs, sessions)
+*.db
+*.sqlite
+*.sqlite3
+*.log
+instance/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large / generated model artifacts (kept in models/ for TRL5 demo)
+# Uncomment to exclude trained models from VCS:
+# models/*.joblib

@@ -1,0 +1,57 @@
+{
+  "trl_level": 5,
+  "synthetic_data_rows": {
+    "tubes": 320,
+    "timeseries": 240,
+    "temp_map": 76800,
+    "rul_labels": 320,
+    "sc_optimization": 4000,
+    "burner_status": 3000,
+    "catalyst": 2000
+  },
+  "real_data_used": {
+    "airfoil": true,
+    "ccpp": true
+  },
+  "training_rows": {
+    "module1_temperature_map": 76800,
+    "module2_rul": 320,
+    "module3_optimization": 13568,
+    "module4_burner": 4503,
+    "module4_catalyst": 2000
+  },
+  "metrics": {
+    "module1_temperature_map": {
+      "rmse_c": 3.09,
+      "mae_c": 2.467,
+      "r2": 0.947,
+      "n_test": 15360,
+      "meets_SRS_T1_ACC_rmse_le_15": true
+    },
+    "module2_rul": {
+      "mae_hours": 6959.2,
+      "rmse_hours": 30822.7,
+      "r2": 0.7327,
+      "auc_90d": 1.0,
+      "accuracy_90d": 1.0,
+      "n_test": 64,
+      "meets_SRS_T2_ACC_mae_le_10000h": true,
+      "meets_SRS_T2_AUC_ge_0.85": true
+    },
+    "module3_optimization": {
+      "eff_mae": 0.0072,
+      "eff_rmse": 0.0095,
+      "eff_r2": 0.9906,
+      "n_test": 2714,
+      "meets_SRS_T3_EFF_relerr_le_5pct": true
+    },
+    "module4_burner_catalyst": {
+      "auc": 1.0,
+      "accuracy": 0.9989,
+      "activity_mae": 0.0177,
+      "activity_r2": 0.9711,
+      "n_test": 901
+    }
+  },
+  "all_srs_quality_targets_met": true
+}

@@ -1,0 +1,18 @@
+{
+  "rmse": 3.089525671614047,
+  "mae": 2.466969317739039,
+  "r2": 0.9469501856704463,
+  "n_test": 15360,
+  "feature_names": [
+    "burner_intensity_avg",
+    "burner_intensity_min",
+    "burner_intensity_max",
+    "sc_ratio",
+    "t_out",
+    "feed_flow_nm3h",
+    "fuel_flow_nm3h",
+    "row_factor",
+    "col_norm",
+    "anomaly_offset"
+  ]
+}

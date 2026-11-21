@@ -1,0 +1,14 @@
+{
+  "auc": 0.9999899456057271,
+  "accuracy": 0.9988901220865705,
+  "activity_mae": 0.017717688582869227,
+  "activity_r2": 0.9711001220725519,
+  "n_test": 901,
+  "feature_names": [
+    "intensity",
+    "fuel_flow_nm3h",
+    "angle_deg",
+    "age_h",
+    "avg_tube_t_c"
+  ]
+}

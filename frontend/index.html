@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MRTO — سامانه پایش هوشمند ریفورمر متانول — پتروشیمی مرجان</title>
+<style>
+  :root {
+    --bg: #0B1C2C;
+    --panel: #162235;
+    --panel-2: #1B2E45;
+    --accent: #37DCF2;
+    --accent-2: #1B6B7A;
+    --text: #E6EEF5;
+    --text-soft: #90989F;
+    --warn: #FFB454;
+    --danger: #FF5A6E;
+    --ok: #3DDC97;
+    --grid: rgba(55,220,242,0.10);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: 'Vazirmatn', 'Tahoma', 'Segoe UI', sans-serif; }
+  body { min-height: 100vh; }
+  .container { max-width: 1400px; margin: 0 auto; padding: clamp(12px, 2vw, 32px); }
+  header.topbar {
+    background: linear-gradient(180deg, var(--panel), var(--panel-2));
+    border-bottom: 2px solid var(--accent-2);
+    padding: clamp(10px, 1.5vw, 18px) clamp(12px, 2vw, 32px);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  }
+  .topbar h1 { font-size: clamp(1.0rem, 2vw, 1.4rem); margin: 0; color: var(--text); font-weight: 700; }
+  .topbar .sub { font-size: clamp(0.75rem, 1.2vw, 0.95rem); color: var(--text-soft); margin-right: 12px; }
+  .topbar .right { margin-inline-start: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .pill {
+    background: var(--panel-2); border: 1px solid var(--accent-2);
+    border-radius: 999px; padding: 6px 14px; font-size: 0.85rem; color: var(--text);
+  }
+  .pill.live::before {
+    content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ok); margin-inline-end: 6px; box-shadow: 0 0 6px var(--ok);
+    animation: blink 1.4s infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.3; } }
+  .tabs {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    padding: 14px clamp(12px, 2vw, 32px) 0;
+  }
+  .tab {
+    background: var(--panel); border: 1px solid transparent;
+    color: var(--text-soft); padding: 10px 18px; border-radius: 10px 10px 0 0;
+    cursor: pointer; font-size: 0.92rem; transition: all 0.15s;
+  }
+  .tab.active { color: var(--text); background: var(--panel-2); border-color: var(--accent-2); }
+  .panel {
+    background: var(--panel); border: 1px solid var(--accent-2);
+    border-radius: 12px; padding: clamp(14px, 2vw, 24px); margin-top: 14px;
+  }
+  .panel h2 {
+    margin: 0 0 14px; color: var(--accent); font-size: clamp(1.0rem, 1.6vw, 1.3rem);
+    border-bottom: 1px solid var(--accent-2); padding-bottom: 8px; font-weight: 600;
+  }
+  .grid-cards {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  }
+  .card { background: var(--panel-2); border-radius: 10px; padding: 14px;
+    border-inline-start: 3px solid var(--accent); }
+  .card .label { color: var(--text-soft); font-size: 0.78rem; margin-bottom: 6px; }
+  .card .value { font-size: clamp(1.3rem, 2.5vw, 1.8rem); font-weight: 700; color: var(--text); }
+  .card.warn .value { color: var(--warn); }
+  .card.danger .value { color: var(--danger); }
+  .card.ok .value { color: var(--ok); }
+  .card .delta { font-size: 0.8rem; color: var(--text-soft); margin-top: 4px; }
+
+  .heatmap {
+    display: grid; gap: 2px; margin: 12px 0;
+    grid-template-columns: repeat(auto-fill, minmax(min(18px, 5vw), 1fr));
+  }
+  .heat-cell {
+    aspect-ratio: 1 / 1.4; border-radius: 2px; background: #2A3F55;
+    cursor: pointer; position: relative;
+  }
+  .heat-cell.hot { background: #FF5A6E; }
+  .heat-cell.warm { background: #FFB454; }
+  .heat-cell.cool { background: #37DCF2; }
+  .heat-cell.cold { background: #1B6B7A; }
+  .heat-cell:hover::after {
+    content: attr(data-info); position: absolute; bottom: 120%; right: 0;
+    background: #000; color: #fff; padding: 4px 8px; border-radius: 4px;
+    font-size: 0.75rem; white-space: nowrap; z-index: 10; pointer-events: none;
+  }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 0.78rem; color: var(--text-soft); }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+
+  table.data { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  table.data th, table.data td {
+    padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--accent-2);
+  }
+  table.data th { color: var(--accent); font-weight: 600; }
+  table.data tr:hover { background: rgba(55,220,242,0.05); }
+  .scroll-wrap { overflow-x: auto; max-width: 100%; }
+
+  .gauge { position: relative; height: 12px; background: var(--panel-2);
+    border-radius: 6px; overflow: hidden; margin-top: 6px; }
+  .gauge-fill { height: 100%; background: linear-gradient(90deg, var(--ok), var(--warn), var(--danger)); }
+
+  button.btn {
+    background: var(--accent-2); color: var(--text); border: none;
+    padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.88rem;
+    transition: background 0.15s;
+  }
+  button.btn:hover { background: var(--accent); color: #000; }
+  button.btn.danger { background: var(--danger); }
+  button.btn.small { padding: 4px 10px; font-size: 0.78rem; }
+
+  .alert-row {
+    display: flex; gap: 10px; align-items: center; padding: 10px 12px;
+    background: var(--panel-2); border-radius: 8px; margin-bottom: 8px;
+    border-inline-start: 3px solid var(--danger);
+  }
+  .alert-row.warn { border-inline-start-color: var(--warn); }
+  .alert-row .severity {
+    background: var(--danger); color: #fff; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.78rem; font-weight: 600;
+  }
+  .alert-row.warn .severity { background: var(--warn); color: #000; }
+  .alert-row .info { flex: 1; }
+  .alert-row .info b { color: var(--text); }
+  .alert-row .info small { color: var(--text-soft); display: block; margin-top: 2px; }
+  .form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .form-row label { display: block; color: var(--text-soft); font-size: 0.8rem; margin-bottom: 4px; }
+  .form-row input { background: var(--panel-2); border: 1px solid var(--accent-2);
+    color: var(--text); padding: 8px; border-radius: 6px; width: 100%; }
+  .form-row .field { flex: 1; min-width: 120px; }
+  .result-box { background: var(--panel-2); border-radius: 8px; padding: 12px; margin-top: 12px; }
+  .result-box b { color: var(--accent); }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  footer { text-align: center; color: var(--text-soft); padding: 24px;
+    font-size: 0.78rem; border-top: 1px solid var(--accent-2); margin-top: 30px; }
+
+  @media (max-width: 640px) {
+    .tabs { flex-direction: column; }
+    .tab { border-radius: 8px; }
+    .grid-cards { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 420px) {
+    .grid-cards { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div>
+    <h1>سامانه هوشمند پایش ریفورمر متانول (MRTO)</h1>
+    <div class="sub">پتروشیمی مرجان — سطح آمادگی فناوری TRL 5</div>
+  </div>
+  <div class="right">
+    <span class="pill" id="pill-time">—</span>
+    <span class="pill live" id="pill-status">در حال اتصال ...</span>
+  </div>
+</header>
+
+<div class="container">
+  <div class="tabs">
+    <div class="tab active" data-tab="overview">نمای کلی</div>
+    <div class="tab" data-tab="temperature">۱. پایش دما</div>
+    <div class="tab" data-tab="rul">۲. عمر باقیمانده</div>
+    <div class="tab" data-tab="optim">۳. بهینه‌سازی S/C</div>
+    <div class="tab" data-tab="burners">۴. مشعل و کاتالیست</div>
+    <div class="tab" data-tab="alerts">هشدارها</div>
+    <div class="tab" data-tab="metrics">کیفیت مدل‌ها</div>
+  </div>
+
+  <!-- Overview -->
+  <div class="tab-content active" data-content="overview">
+    <div class="panel">
+      <h2>نمای کلی سلامت کوره ریفورمر</h2>
+      <div class="grid-cards">
+        <div class="card ok"><div class="label">تعداد لوله‌ها</div><div class="value" id="ov-n-tubes">—</div></div>
+        <div class="card" id="ov-mean-temp-card"><div class="label">میانگین دمای دیواره</div><div class="value" id="ov-mean-temp">—</div><div class="delta">ساختگی + واقعی</div></div>
+        <div class="card warn" id="ov-hot-card"><div class="label">نقاط داغ فعال</div><div class="value" id="ov-hotspots">—</div><div class="delta">Δ > 30 °C</div></div>
+        <div class="card danger" id="ov-alert-card"><div class="label">هشدارهای باز</div><div class="value" id="ov-alerts">—</div><div class="delta">نیازمند اقدام</div></div>
+        <div class="card ok"><div class="label">بازده تبدیل پیش‌بینی</div><div class="value" id="ov-eff">—</div><div class="delta">از ماژول ۳</div></div>
+        <div class="card" id="ov-fuel-card"><div class="label">صرفه‌جویی سوخت تخمینی</div><div class="value" id="ov-fuel">—</div><div class="delta">نسبت به خط پایه</div></div>
+      </div>
+      <div class="scroll-wrap" style="margin-top:14px;">
+        <table class="data" id="ov-table">
+          <thead><tr><th>لوله</th><th>ردیف</th><th>ستون</th><th>دمای دیواره (°C)</th><th>عمر باقیمانده (h)</th><th>احتمال خرابی ۹۰ روزه</th><th>وضعیت</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Module 1 -->
+  <div class="tab-content" data-content="temperature">
+    <div class="panel">
+      <h2>ماژول ۱ — نقشه توزیع دما و شناسایی نقاط داغ</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">هر سلول یک لوله از کوره را نشان می‌دهد. رنگ بر اساس دمای دیواره است. نشان‌دهنده نقاط داغ (قرمز)، گرم (نارنجی)، خنک (آبی روشن) و سرد (آبی تیره).</p>
+      <div class="legend">
+        <span><i style="background:#FF5A6E"></i> داغ (&gt; ۹۳۰ °C)</span>
+        <span><i style="background:#FFB454"></i> گرم (۸۸۰–۹۳۰)</span>
+        <span><i style="background:#37DCF2"></i> خنک (۸۲۰–۸۸۰)</span>
+        <span><i style="background:#1B6B7A"></i> سرد (&lt; ۸۲۰)</span>
+      </div>
+      <div class="heatmap" id="heatmap"></div>
+      <div class="scroll-wrap">
+        <table class="data" id="hotspot-table">
+          <thead><tr><th>لوله</th><th>دمای دیواره (°C)</th><th>انحراف از میانگین (°C)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Module 2 -->
+  <div class="tab-content" data-content="rul">
+    <div class="panel">
+      <h2>ماژول ۲ — عمر باقیمانده و پیش‌بینی خرابی</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">برآورد عمر باقیمانده هر لوله با مدل ترکیبی خزش-یادگیری ماشین (Larson-Miller + RandomForest). لوله‌های با RUL &lt; ۲۰٬۰۰۰ ساعت در اولویت بازرسی هستند.</p>
+      <div class="scroll-wrap">
+        <table class="data" id="rul-table">
+          <thead><tr><th>لوله</th><th>عمر باقیمانده (h)</th><th>احتمال خرابی ۹۰ روزه</th><th>سطح ریسک</th><th>گauge</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Module 3 -->
+  <div class="tab-content" data-content="optim">
+    <div class="panel">
+      <h2>ماژول ۳ — بهینه‌سازی نسبت بخار به کربن (S/C)</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">پارامترهای فعلی بهره‌برداری را وارد کنید تا سامانه نقطه کار بهینه را پیشنهاد دهد (با رعایت محدودیت‌های ایمنی و کیفیت).</p>
+      <div class="form-row">
+        <div class="field"><label>S/C فعلی</label><input type="number" id="opt-sc" value="3.2" step="0.1" min="2" max="5"></div>
+        <div class="field"><label>دمای خروجی (°C)</label><input type="number" id="opt-tout" value="880" step="5" min="700" max="1000"></div>
+        <div class="field"><label>دبی خوراک (Nm³/h)</label><input type="number" id="opt-feed" value="32000" step="500" min="10000" max="50000"></div>
+        <div class="field"><label>سن کاتالیست (۰–۱)</label><input type="number" id="opt-catage" value="0.3" step="0.05" min="0" max="1.2"></div>
+        <div class="field"><label>دبی سوخت (Nm³/h)</label><input type="number" id="opt-fuel" value="11500" step="100" min="5000" max="20000"></div>
+        <button class="btn" id="opt-run">پیشنهاد نقطه بهینه</button>
+      </div>
+      <div class="result-box" id="opt-result" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- Module 4 -->
+  <div class="tab-content" data-content="burners">
+    <div class="panel">
+      <h2>ماژول ۴ — پایش مشعل‌ها و کاتالیست</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">وضعیت مشعل‌ها به همراه برچسب ناکارآمدی پیش‌بینی‌شده با مدل ماژول ۴. شاخص افت فعالیت کاتالیست از داده‌های دبی و افت فشار برآورد می‌شود.</p>
+      <div class="scroll-wrap">
+        <table class="data" id="burner-table">
+          <thead><tr><th>مشعل</th><th>شدت</th><th>دبی سوخت (Nm³/h)</th><th>زاویه (°)</th><th>وضعیت پیش‌بینی</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Alerts -->
+  <div class="tab-content" data-content="alerts">
+    <div class="panel">
+      <h2>هشدارهای فعال</h2>
+      <div id="alerts-list"></div>
+    </div>
+  </div>
+
+  <!-- Metrics -->
+  <div class="tab-content" data-content="metrics">
+    <div class="panel">
+      <h2>کیفیت مدل‌های آموزش‌دیده (مقایسه با اهداف SRS)</h2>
+      <div class="grid-cards" id="metrics-cards"></div>
+      <div class="scroll-wrap" style="margin-top:14px;">
+        <table class="data" id="metrics-table">
+          <thead><tr><th>ماژول</th><th>معیار</th><th>مقدار</th><th>هدف SRS</th><th>وضعیت</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  MRTO v1.0.0 — توسعه‌یافته برای پتروشیمی مرجان | سطح آمادگی فناوری TRL 5 | داده‌ها: مصنوعی فیزیک‌محور + واقعی (UCI)
+</footer>
+
+<script>
+const API_BASE = (window.location.origin && window.location.pathname.includes('/api'))
+  ? '' : 'http://localhost:8000';
+let API = API_BASE;
+// Auto-detect if served by backend (same origin)
+if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+  if (window.location.port === '8000' || window.location.pathname.startsWith('/api')) {
+    API = '';
+  } else {
+    API = 'http://localhost:8000';
+  }
+}
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+
+// ── Tabs ──
+$$('.tab').forEach(t => t.addEventListener('click', () => {
+  $$('.tab').forEach(x => x.classList.remove('active'));
+  $$('.tab-content').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  $(`[data-content="${t.dataset.tab}"]`).classList.add('active');
+}));
+
+// ── Helpers ──
+async function getJSON(path) {
+  const res = await fetch(API + path);
+  if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`);
+  return await res.json();
+}
+async function postJSON(path, body) {
+  const res = await fetch(API + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`);
+  return await res.json();
+}
+
+function tempClass(t) {
+  if (t >= 930) return 'hot';
+  if (t >= 880) return 'warm';
+  if (t >= 820) return 'cool';
+  return 'cold';
+}
+function riskLevel(p) {
+  if (p > 0.5) return { cls: 'danger', text: 'بالا' };
+  if (p > 0.2) return { cls: 'warn', text: 'متوسط' };
+  return { cls: 'ok', text: 'پایین' };
+}
+
+// ── Overview load ──
+async function loadOverview() {
+  try {
+    const [health, tmap, alerts, rul] = await Promise.all([
+      getJSON('/api/v1/health'),
+      getJSON('/api/v1/temperature-map'),
+      getJSON('/api/v1/alerts'),
+      getJSON('/api/v1/rul'),
+    ]);
+    $('#pill-status').textContent = 'متصل';
+    $('#pill-time').textContent = new Date().toLocaleTimeString('fa-IR');
+    $('#ov-n-tubes').textContent = health.n_tubes;
+    $('#ov-mean-temp').textContent = tmap.mean_wall_temp_c ? tmap.mean_wall_temp_c.toFixed(1) + ' °C' : '—';
+    $('#ov-hotspots').textContent = tmap.hotspots ? tmap.hotspots.length : 0;
+    $('#ov-alerts').textContent = health.open_alerts;
+
+    // Build combined table
+    const tbody = $('#ov-table tbody');
+    tbody.innerHTML = '';
+    const rulMap = {};
+    (rul.tubes || []).forEach(t => rulMap[t.tube_id] = t);
+    (tmap.readings || []).forEach(r => {
+      const ru = rulMap[r.tube_id] || {};
+      const p = ru.p_fail_90d || 0;
+      const lvl = riskLevel(p);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${r.tube_id}</td>
+        <td>${(parseInt(r.tube_id.split('-')[0].slice(1)) || 1)}</td>
+        <td>${(parseInt(r.tube_id.split('-')[1]) || 1)}</td>
+        <td>${r.wall_temp_c.toFixed(1)}</td>
+        <td>${ru.rul_h ? Math.round(ru.rul_h).toLocaleString('fa-IR') : '—'}</td>
+        <td>${(p * 100).toFixed(1)}%</td>
+        <td><span style="color:var(--${lvl.cls});">${lvl.text}</span></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    // Hotspot table
+    const ht = $('#hotspot-table tbody');
+    ht.innerHTML = '';
+    (tmap.hotspots || []).forEach(h => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${h.tube_id}</td><td>${h.wall_temp_c.toFixed(1)}</td><td>+${h.delta_c.toFixed(1)}</td>`;
+      ht.appendChild(tr);
+    });
+    // Heatmap
+    const hm = $('#heatmap');
+    hm.innerHTML = '';
+    (tmap.readings || []).forEach(r => {
+      const c = document.createElement('div');
+      c.className = 'heat-cell ' + tempClass(r.wall_temp_c);
+      c.dataset.info = `${r.tube_id}: ${r.wall_temp_c.toFixed(1)}°C`;
+      c.title = `${r.tube_id}: ${r.wall_temp_c.toFixed(1)}°C`;
+      hm.appendChild(c);
+    });
+  } catch (e) {
+    $('#pill-status').textContent = 'خطا در اتصال';
+    console.error(e);
+  }
+}
+
+// ── RUL ──
+async function loadRUL() {
+  try {
+    const rul = await getJSON('/api/v1/rul');
+    const tbody = $('#rul-table tbody');
+    tbody.innerHTML = '';
+    (rul.tubes || []).forEach(t => {
+      const lvl = riskLevel(t.p_fail_90d);
+      const pct = Math.max(0, Math.min(1, t.rul_h / 100000));
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${t.tube_id}</td>
+        <td>${Math.round(t.rul_h).toLocaleString('fa-IR')}</td>
+        <td>${(t.p_fail_90d * 100).toFixed(1)}%</td>
+        <td><span style="color:var(--${lvl.cls});">${lvl.text}</span></td>
+        <td><div class="gauge" style="max-width:140px;"><div class="gauge-fill" style="width:${(1-pct)*100}%;"></div></div></td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) { console.error(e); }
+}
+
+// ── Optimization ──
+$('#opt-run').addEventListener('click', async () => {
+  const body = {
+    sc_ratio: parseFloat($('#opt-sc').value),
+    t_out_c: parseFloat($('#opt-tout').value),
+    feed_flow_nm3h: parseFloat($('#opt-feed').value),
+    cat_age: parseFloat($('#opt-catage').value),
+    fuel_flow_nm3h: parseFloat($('#opt-fuel').value),
+    alpha_eff: 0.7, alpha_fuel: 0.3,
+  };
+  try {
+    const r = await postJSON('/api/v1/optimization', body);
+    const box = $('#opt-result');
+    box.style.display = 'block';
+    if (r.error) {
+      box.innerHTML = `<b style="color:var(--danger);">خطا: ${r.error}</b>`;
+      return;
+    }
+    box.innerHTML = `
+      <p><b>S/C بهینه:</b> ${r.sc_ratio_opt.toFixed(3)}</p>
+      <p><b>دمای خروجی بهینه:</b> ${r.t_out_c_opt.toFixed(1)} °C</p>
+      <p><b>بازده پیش‌بینی‌شده:</b> ${((r.efficiency_pred||0)*100).toFixed(2)}%</p>
+      <p><b>ریسک رسوب کک:</b> ${(r.coking_risk_pred||0).toFixed(3)} (محدودیت ≤ ۰.۵)</p>
+      <p><b>سوخت مصرفی:</b> ${Math.round(r.fuel_pred_nm3h)} Nm³/h</p>
+      <p><b>صرفه‌جویی سوخت:</b> <span style="color:${r.fuel_saving_pct>0?'var(--ok)':'var(--warn)'};">${r.fuel_saving_pct.toFixed(2)}%</span></p>
+    `;
+    $('#ov-eff').textContent = ((r.efficiency_pred||0)*100).toFixed(1) + '%';
+    $('#ov-fuel').textContent = (r.fuel_saving_pct||0).toFixed(2) + '%';
+  } catch (e) {
+    $('#opt-result').style.display = 'block';
+    $('#opt-result').innerHTML = `<b style="color:var(--danger);">خطا: ${e.message}</b>`;
+  }
+});
+
+// ── Burners ──
+async function loadBurners() {
+  try {
+    const b = await getJSON('/api/v1/burners');
+    const tbody = $('#burner-table tbody');
+    tbody.innerHTML = '';
+    (b.burners || []).forEach(br => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${br.burner_id}</td>
+        <td>${(br.intensity ?? 0).toFixed(2)}</td>
+        <td>${(br.fuel_flow ?? 0).toFixed(0)}</td>
+        <td>${(br.angle ?? 0).toFixed(1)}</td>
+        <td>${br.inefficient ? '<span style="color:var(--danger);">ناکارآمد</span>' : '<span style="color:var(--ok);">نرمال</span>'}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) { console.error(e); }
+}
+
+// ── Alerts ──
+async function loadAlerts() {
+  try {
+    const a = await getJSON('/api/v1/alerts');
+    const list = $('#alerts-list');
+    list.innerHTML = '';
+    if (a.alerts.length === 0) {
+      list.innerHTML = '<p style="color:var(--text-soft);">هیچ هشدار فعالی وجود ندارد.</p>';
+      return;
+    }
+    a.alerts.forEach(al => {
+      const div = document.createElement('div');
+      div.className = 'alert-row' + (al.severity === 'high' ? '' : ' warn');
+      div.innerHTML = `
+        <div class="severity">${al.severity === 'high' ? 'بحرانی' : 'هشدار'}</div>
+        <div class="info">
+          <b>${al.message}</b>
+          <small>لوله: ${al.tube_id || '—'} | ماژول: ${al.module} | زمان: ${al.ts_minute} دقیقه</small>
+        </div>
+        <button class="btn small" data-ack="${al.id}">تأیید</button>
+      `;
+      list.appendChild(div);
+    });
+    list.querySelectorAll('[data-ack]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await postJSON(`/api/v1/alerts/${btn.dataset.ack}/ack`, {});
+          loadAlerts();
+          loadOverview();
+        } catch (e) { alert('خطا در تأیید: ' + e.message); }
+      });
+    });
+  } catch (e) { console.error(e); }
+}
+
+// ── Metrics ──
+const SRS_TARGETS = {
+  module1_temperature_map: [
+    ['rmse_c', '≤ 15 °C', v => v <= 15],
+    ['mae_c', '≤ 12 °C', v => v <= 12],
+    ['r2', '≥ 0.8', v => v >= 0.8],
+  ],
+  module2_rul: [
+    ['mae_hours', '≤ 10000 h', v => v <= 10000],
+    ['auc_90d', '≥ 0.85', v => v >= 0.85],
+    ['r2', '≥ 0.5', v => v >= 0.5],
+  ],
+  module3_optimization: [
+    ['eff_mae', '≤ 0.05', v => v <= 0.05],
+    ['eff_r2', '≥ 0.7', v => v >= 0.7],
+  ],
+  module4_burner_catalyst: [
+    ['auc', '≥ 0.8', v => v >= 0.8],
+    ['activity_r2', '≥ 0.7', v => v >= 0.7],
+  ],
+};
+const MODULE_LABEL = {
+  module1_temperature_map: '۱. پایش دما',
+  module2_rul: '۲. عمر باقیمانده',
+  module3_optimization: '۳. بهینه‌سازی S/C',
+  module4_burner_catalyst: '۴. مشعل/کاتالیست',
+};
+async function loadMetrics() {
+  try {
+    const m = await getJSON('/api/v1/metrics');
+    const cards = $('#metrics-cards');
+    cards.innerHTML = '';
+    const tbody = $('#metrics-table tbody');
+    tbody.innerHTML = '';
+    Object.keys(SRS_TARGETS).forEach(k => {
+      const data = m[k];
+      if (!data) return;
+      SRS_TARGETS[k].forEach(([key, label, ok]) => {
+        const v = data[key];
+        if (v === undefined || v === null) return;
+        const passed = ok(v);
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${MODULE_LABEL[k]}</td>
+          <td>${key}</td>
+          <td>${typeof v === 'number' ? v.toFixed(4) : v}</td>
+          <td>${label}</td>
+          <td style="color:var(--${passed?'ok':'danger'});">${passed ? '✓ برآورده' : '✗ برآورده‌نشده'}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    });
+  } catch (e) { console.error(e); }
+}
+
+// ── Init ──
+loadOverview();
+loadRUL();
+loadBurners();
+loadAlerts();
+loadMetrics();
+setInterval(loadOverview, 30000);
+</script>
+</body>
+</html>
