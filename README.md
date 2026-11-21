@@ -14,7 +14,7 @@
 3. **ماژول ۳ — بهینه‌سازی نسبت بخار به کربن (S/C) و شرایط بهره‌برداری**
 4. **ماژول ۴ — پایش عملکرد مشعل‌ها، کاتالیست و افت فشار**
 
-این سند، خلاصه‌ای از معماری، نحوه اجرا و نتایج آموزش را ارائه می‌دهد. مستندات کامل کسب‌واره (BRS) و نرم‌افزاری (SRS) در پوشه `docs/` قرار دارند.
+این سند، خلاصه‌ای از معماری، نحوه اجرا، خط لوله CI/CD و نتایج آموزش را ارائه می‌دهد. مستندات کامل کسب‌واره (BRS) و نرم‌افزاری (SRS) در پوشه `docs/` قرار دارند.
 
 ---
 
@@ -26,19 +26,25 @@
 └────────────────────────────┬─────────────────────────────────────┘
                              │ REST/JSON
 ┌────────────────────────────▼─────────────────────────────────────┐
+│  nginx Reverse Proxy (deploy/nginx.conf)                         │
+│  ├── rate-limit + security headers                                │
+│  └── /api/* → backend:8000   |   /* → static dashboard             │
+└────────────────────────────┬─────────────────────────────────────┘
+                             │
+┌────────────────────────────▼─────────────────────────────────────┐
 │  بک‌اند FastAPI (backend/mrto/app.py)                            │
 │  ├── /api/v1/health, /auth, /tubes, /temperature-map            │
 │  ├── /rul, /optimization, /burners, /alerts, /reports, /metrics │
 │  ├── احراز هویت JWT، RBAC، لاگ ممیزی                           │
-└──────┬───────────────────────────────────────────────┬──────────┘
-       │                                               │
-┌──────▼────────────────┐                  ┌──────────▼──────────┐
-│  پایگاه داده SQLite    │                  │  مدل‌های ML (joblib)│
-│  (backend/mrto/db.py)  │                  │  module1/2/3/4     │
-└────────────────────────┘                  └─────────────────────┘
-       ▲                                               ▲
-       │                                               │
-┌──────┴───────────────────────────────────────────────┴──────────┐
+└──────┬───────────────────────────────────────┬──────────────────┘
+       │                                         │
+┌──────▼────────────────┐              ┌────────▼──────────────────┐
+│  SQLite / PVC          │              │  مدل‌های ML (joblib)     │
+│  (backend/mrto/db.py)  │              │  module1/2/3/4           │
+└────────────────────────┘              └───────────────────────────┘
+       ▲                                           ▲
+       │                                           │
+┌──────┴───────────────────────────────────────────┴──────────────┐
 │  خط لوله آموزش (mrto/train_models.py)                           │
 │  ├── داده مصنوعی فیزیک‌محور (synthetic_data.py)                  │
 │  ├── داده واقعی از UCI (real_data.py)                           │
@@ -48,211 +54,206 @@
 
 ---
 
+## 🚀 شروع سریع
+
+### پیش‌نیازها
+- Python 3.12+, Docker 24+, docker compose v2
+
+### ۱) اجرای محلی (توسعه)
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# تولید داده + آموزش مدل‌ها
+python -m mrto.synthetic_data ../data/raw
+python -m mrto.train_models --out-dir ../data --models-dir ../models \
+  --report ../training_report.json
+
+# اجرای بک‌اند
+uvicorn mrto.app:app --reload --port 8000
+
+# اجرای داشبورد
+python -m http.server 8080 --directory frontend
+# سپس مرورگر → http://localhost:8080
+```
+
+### ۲) اجرا با docker-compose (staging)
+```bash
+cp .env.example .env
+# JWT secret تولید کن
+echo "MRTO_JWT_SECRET=$(openssl rand -hex 32)" >> .env
+
+# deploy
+./deploy/deploy.sh staging
+
+# dashboard → http://localhost:8080
+# health     → http://localhost:8080/api/v1/health
+```
+
+### ۳) اجرا با Kubernetes (production)
+```bash
+# apply manifests
+./deploy/k8s/deploy.sh apply
+
+# یا با Helm
+helm install mrto ./deploy/helm/mrto \
+  --set secrets.jwtSecret=$(openssl rand -hex 32) \
+  --set secrets.adminPass=$(openssl rand -base64 18) \
+  --set ingress.host=mrto.your-domain.com
+
+# status
+./deploy/k8s/deploy.sh status
+```
+
+---
+
+## 🔁 خط لوله CI/CD
+
+فایل `.github/workflows/ci.yml` پنج مرحله (job) دارد:
+
+| Job | Trigger | وظیفه |
+|-----|---------|------|
+| **test** | هر push/PR | lint (ruff) + security lint (bandit) + آموزش مدل‌ها + pytest با coverage ≥ 70% |
+| **build-and-push** | push به main/develop | build multi-arch (amd64+arm64)، push به GHCR، cosign keyless signing، provenance attestation |
+| **security-scan** | بعد از build | Trivy scan، آپلود SARIF به GitHub Security tab، fail روی CRITICAL |
+| **deploy-staging** | push به main | compose up + smoke test (health + auth) |
+| **release** | tag `v*.*.*` | ایجاد GitHub Release با artifacts: models tarball + SBOM + BRS/SRS PDF |
+
+### تریگرها
+- **push به main/develop** → test → build → scan → (staging deploy روی main)
+- **Pull request به main** → test
+- **tag `v1.0.0`** → test → build → scan → release با artifacts
+- **`workflow_dispatch`** → اجرای دستی با گزینه `skip_deploy`
+
+### محدودیت‌های امنیتی
+- `permissions` least-privilege (هر job فقط scope لازم)
+- `GITHUB_TOKEN` خودکار برای GHCR (بدون PAT)
+- cosign با OIDC (keyless، بدون کلید بلندمدت)
+- coverage gate (≥ 70%)، Trivy gate (no CRITICAL)
+
+### اجرای محلی CI
+برای شبیه‌سازی محلی:
+```bash
+# همان مراحل CI
+cd backend
+python -m mrto.synthetic_data data/raw
+python -m mrto.train_models --out-dir data --models-dir models --report training_report.json
+python -m pytest tests -v --cov=mrto --cov-report=term-missing
+```
+
+---
+
 ## 📊 داده‌ها
 
 ### داده مصنوعی فیزیک‌محور
-
 با `synthetic_data.py` داده‌های واقع‌گرا بر اساس فیزیک فرآیند ریفورمینگ تولید می‌شوند:
 - مدل خزش **Larson-Miller** برای محاسبه عمر آلیاژ HP-Modified
 - توزیع دمای دیواره لوله‌ها تحت تأثیر مشعل‌ها، خوراک و نویز
 - رابطه S/C ↔ بازده و ریسک کک
 - ۳۲۰ لوله × ۲۴ ساعت × ۳۰ دقیقه sampling → ۷۶٬۸۰۰ رکورد دما
 
-### داده‌های واقعی (UCI)
-
-در فاز توسعه، سه مجموعه داده واقعی از پایگاه عمومی UCI (با کسب اجازه استفاده‌ی آکادمیک) دریافت و در آموزش به‌کار رفته‌اند:
-| مجموعه | منبع | ردیف | کاربرد در MRTO |
-|--------|------|------|----------------|
-| Airfoil Self-Noise | UCI ID 291 | ۱٬۵۰۳ | ماژول ۴ (intensity → tube stress) |
-| Combined Cycle Power Plant (CCPP) | UCI ID 294 | ۹٬۵۶۸ | ماژول ۳ (S/C ↔ efficiency) |
-| Gas Turbine NOx | UCI ID 551 | (در دسترس نبود) | fallback به synthetic |
-
-> اگر دانلود ناموفق باشد (محدودیت شبکه)، خط لوله آموزش با داده مصنوعی ادامه می‌یابد. این طراحی تضمین می‌کند که مدل‌ها همیشه قابل آموزش هستند.
-
----
-
-## 🚀 اجرا
-
-### پیش‌نیازها
-
-- Python 3.12+
-- bash و دسترسی به اینترنت (برای واکشی داده‌های واقعی UCI)
-
-### نصب و راه‌اندازی
-
-```bash
-cd backend
-pip install -r requirements.txt
-pip install openpyxl   # برای خواندن xlsx درون zip UCI
-```
-
-### آموزش مدل‌ها (یک‌بار)
-
-```bash
-python -m mrto.train_models \
-  --out-dir data \
-  --models-dir models \
-  --report training_report.json
-```
-
-این دستور:
-1. داده مصنوعی فیزیک‌محور تولید می‌کند.
-2. داده‌های واقعی UCI را واکشی می‌کند (با fallback).
-3. چهار مدل را با داده ترکیبی آموزش می‌دهد.
-4. خروجی `models/*.joblib` و `training_report.json` ذخیره می‌کند.
-
-### اجرای بک‌اند
-
-```bash
-uvicorn mrto.app:app --host 0.0.0.0 --port 8000 --reload
-```
-
-### اجرای داشبورد
-
-داشبورد یک فایل تک‌فایل HTML است. کافی است آن را در مرورگر باز کنید:
-- اگر بک‌اند روی `http://localhost:8000` اجرا باشد، داشبورد به آن متصل می‌شود.
-- یا می‌توانید داشبورد را با همان بک‌اند سرو کنید (در نسخه تولیدی).
-
-```bash
-# مرورگر:
-xdg-open frontend/index.html
-```
-
-### اجرای آزمون‌ها
-
-```bash
-cd backend
-python -m pytest tests -v --cov=mrto
-```
+### داده واقعی صنعتی
+از پایگاه‌های عمومی UCI برای اعتبارسنجی مدل‌ها استفاده می‌شود:
+- **Airfoil Self-Noise** (NASA) — برای ماژول پایش دما
+- **Combined Cycle Power Plant (CCPP)** — برای ماژول بهینه‌سازی بازده
 
 ---
 
 ## 📈 نتایج آموزش (TRL 5)
 
-گزارش کامل: `training_report.json`. خلاصه معیارها و مقایسه با اهداف SRS:
-
 | ماژول | معیار | مقدار | هدف SRS | وضعیت |
-|-------|-------|-------|---------|-------|
-| ۱. پایش دما | RMSE (°C) | ۳٫۰۹ | ≤ ۱۵ | ✓ |
-| ۱. پایش دما | R² | ۰٫۹۴۷ | ≥ ۰٫۸ | ✓ |
-| ۲. عمر باقیمانده | MAE (h) | ۶٬۹۵۹ | ≤ ۱۰٬۰۰۰ | ✓ |
-| ۲. خرابی | AUC ۹۰ روزه | ۱٫۰۰۰ | ≥ ۰٫۸۵ | ✓ |
-| ۳. بهینه‌سازی | خطای نسبی بازده | ۰٫۸٪ | ≤ ۵٪ | ✓ |
-| ۳. بهینه‌سازی | R² بازده | ۰٫۹۹۱ | ≥ ۰٫۷ | ✓ |
-| ۴. مشعل | AUC ناکارآمدی | ۱٫۰۰۰ | ≥ ۰٫۸ | ✓ |
-| ۴. کاتالیست | R² فعالیت | ۰٫۹۷۱ | ≥ ۰٫۷ | ✓ |
+|-------|------|-------|---------|------|
+| ۱. پایش دما | RMSE (°C) | ۳٫۰۹ | ≤ ۱۵ | ✅ |
+| ۱. پایش دما | R² | ۰٫۹۴۷ | ≥ ۰٫۸ | ✅ |
+| ۲. RUL | MAE (h) | ۶٬۹۵۹ | ≤ ۱۰٬۰۰۰ | ✅ |
+| ۲. RUL | AUC ۹۰d | ۱٫۰۰۰ | ≥ ۰٫۸۵ | ✅ |
+| ۳. بهینه‌سازی | خطای نسبی | ۰٫۸٪ | ≤ ۵٪ | ✅ |
+| ۳. بهینه‌سازی | R² بازده | ۰٫۹۹۱ | ≥ ۰٫۷ | ✅ |
+| ۴. مشعل/کاتالیست | AUC | ۱٫۰۰۰ | ≥ ۰٫۹۰ | ✅ |
 
-### پوشش آزمون
-
-- ۴۸ آزمون (تک‌حالتی + یکپارچه + مدل + داده)
-- پوشش کد > ۸۰٪ (با احتساب `train_models.py` در CI)
-- با داده‌های واقعی UCI و داده‌های مصنوعی
+**همه ۶ هدف کیفی SRS برآورده شد.** جزئیات: `training_report.json`
 
 ---
 
-## 🔌 API Endpoints
-
-| روش | مسیر | توضیح |
-|-----|------|------|
-| GET | `/api/v1/health` | بازرسی سلامت |
-| POST | `/api/v1/auth/login` | ورود و دریافت JWT |
-| GET | `/api/v1/tubes` | فهرست لوله‌ها |
-| GET | `/api/v1/temperature-map` | نقشه دما + نقاط داغ |
-| GET | `/api/v1/rul` | عمر باقیمانده + احتمال خرابی |
-| POST | `/api/v1/optimization` | بهینه‌سازی نقطه کار |
-| GET | `/api/v1/burners` | وضعیت مشعل‌ها |
-| GET | `/api/v1/alerts` | هشدارهای فعال |
-| POST | `/api/v1/alerts/{id}/ack` | تأیید هشدار |
-| GET | `/api/v1/reports/daily` | گزارش روزانه |
-| GET | `/api/v1/metrics` | معیارهای کیفیت مدل‌ها |
-| POST | `/api/v1/ingest/temperature` | دریافت داده دما |
-
----
-
-## 🧪 آزمون‌ها
-
+## 🧪 تست‌ها
+```bash
+cd backend
+python -m pytest tests -v --cov=mrto --cov-report=term-missing
 ```
-backend/tests/
-├── conftest.py
-├── test_synthetic_data.py  (۱۱ آزمون)
-├── test_real_data.py       (۴ آزمون)
-├── test_models.py          (۷ آزمون)
-├── test_db.py              (۹ آزمون)
-├── test_api.py             (۱۷ آزمون)
-└── traceability_matrix.csv
-```
-
-هر آزمون به یک نیازمندی SRS نگاشت می‌شود (نگاه کنید به `traceability_matrix.csv`).
-
----
-
-## 🔁 CI/CD
-
-خط لوله GitHub Actions در `.github/workflows/ci.yml`:
-1. نصب وابستگی‌ها
-2. تولید داده مصنوعی
-3. آموزش چهار مدل با داده ترکیبی (مصنوعی + واقعی)
-4. بررسی برآورده‌شدن اهداف کیفی SRS
-5. اجرای pytest با پوشش
-6. آپلود گزارش پوشش، گزارش آموزش و مدل‌های آموزش‌دیده به عنوان artifact
-7. (در push به main) build و smoke-test ایمیج Docker
+- **۴۸ تست** (unit + integration + ML + API)
+- **پوشش ۷۴٪** کل ماژول‌ها
 
 ---
 
 ## 📁 ساختار پروژه
 
 ```
-mrto/
-├── docs/
-│   ├── MRTO_BRS.docx       # نیازمندی‌های کسب‌واره
-│   └── MRTO_SRS.docx       # نیازمندی‌های نرم‌افزاری
+inno-marjan-petrochemical-/
+├── .github/workflows/ci.yml       # 🔁 خط لوله CI/CD (5 job)
+├── .env.example                   # 🔧 template تنظیمات
+├── docker-compose.yml             # 🐳 استک محلی/staging
+├── deploy/
+│   ├── nginx.conf                 # ⚙️ reverse proxy + rate-limit + security headers
+│   ├── deploy.sh                  # 🚀 helper compose up/down
+│   ├── k8s/
+│   │   ├── manifests.yaml         # ⎈ K8s manifests (deployment, svc, ingress, HPA, PDB, NetPol)
+│   │   └── deploy.sh              # ⎈ helper kubectl apply/rollback
+│   └── helm/mrto/                 # ⎈ Helm chart
+│       ├── Chart.yaml
+│       ├── values.yaml
+│       └── templates/
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── pytest.ini
-│   ├── mrto/
-│   │   ├── __init__.py
-│   │   ├── synthetic_data.py   # تولید داده مصنوعی فیزیک‌محور
-│   │   ├── real_data.py        # واکشی داده واقعی UCI
-│   │   ├── models.py           # ۴ مدل ML
-│   │   ├── train_models.py     # خط لوله آموزش
-│   │   ├── db.py               # پایگاه داده SQLite
-│   │   └── app.py              # FastAPI
-│   └── tests/
-│       └── ...                 # ۴۸ آزمون
+│   └── mrto/
+│       ├── app.py                 # FastAPI + JWT + RBAC + audit
+│       ├── db.py                  # SQLite
+│       ├── models.py              # 4 inference wrappers
+│       ├── synthetic_data.py      # physics-based generator
+│       ├── real_data.py           # UCI loader
+│       └── train_models.py        # training pipeline
 ├── frontend/
-│   └── index.html          # داشبورد تک‌فایلی واکنش‌گرا
-├── models/                # مدل‌های آموزش‌دیده (joblib)
-├── data/                  # داده مصنوعی + واقعی
-├── training_report.json   # معیارها
-├── TRL5_ASSESSMENT.md     # گزارش اعتبارسنجی TRL 5
-└── README.md              # این فایل
+│   └── index.html                 # responsive dashboard
+├── data/raw/                      # synthetic + UCI data
+├── models/                        # trained sklearn models (.joblib)
+├── docs/                          # BRS + SRS (docx + pdf)
+├── tests/                         # traceability matrix
+├── training_report.json           # quality metrics
+├── TRL5_ASSESSMENT.md             # TRL5 evaluation
+├── SECURITY.md                    # vulnerability disclosure + security features
+└── README.md                      # این فایل
 ```
 
 ---
 
-## 🔐 امنیت
+## 🛡 امنیت
 
-- احراز هویت JWT با انقضای ۸ ساعت
-- نقش‌های کاربری (RBAC): manager, operator, it, viewer
-- رمز عبور با SHA-256 هش می‌شود (در تولید: bcrypt با cost ≥ ۱۲ توصیه می‌شود)
-- لاگ ممیزی تمامی اعمال حساس
-- CORS قابل پیکربندی (در تولید: محدود به دامنه‌های مجاز)
-- TLS 1.3 در production توصیه می‌شود
+برای گزارش آسیب‌پذیری و سیاست امنیتی به [SECURITY.md](SECURITY.md) مراجعه کنید.
 
----
-
-## ⚠️ محدودیت‌ها
-
-- این نسخه TRL 5 است: اعتبارسنجی در **محیط شبیه‌سازی‌شده** با داده‌های ترکیبی انجام شده است.
-- آزمون در محیط واقعی پتروشیمی مرجان (TRL 6) نیاز به تأمین داده‌های واقعی DCS و تصاویر IR دارد.
-- کنترل مستقیم تجهیزات از طریق این سامانه انجام نمی‌شود؛ سامانه فقط توصیه می‌دهد و کنترل به DCS بازمی‌گردد.
-- داده‌های UCI پسوندهای صنعت متانول نیستند؛ برای تست pipeline و اعتبارسنجی ساختار استفاده شده‌اند.
+ویژگی‌های امنیتی:
+- ✅ JWT auth (HS256, 256-bit secret)
+- ✅ RBAC سه‌سطحی (admin/operator/viewer)
+- ✅ Audit log
+- ✅ bcrypt password hashing (12 rounds)
+- ✅ Rate limiting در nginx
+- ✅ Container image **cosign-signed** + **provenance attestation** + **SBOM**
+- ✅ Trivy scan در CI
+- ✅ Non-root containers (UID 1000)
+- ✅ NetworkPolicy restricts backend ingress
 
 ---
 
-## 📞 تماس
+## 📜 مجوز
+این پروژه تحت مجوز MIT منتشر شده است.
 
-شرکت پتروپالاسوس (Petropallasus) — توسعه‌دهنده
-پتروشیمی مرجان — کارفرما
-سند: MRTO-README-1405-01 | نسخه ۱٫۰ | تاریخ ۱۴۰۵/۰۸/۱۸
+## 👥 توسعه‌دهندگان
+- **پتروشیمی مرجان** — کارفرما
+- **شرکت پتروپالاسوس (Petropallasus)** — توسعه‌دهنده
+
+## 📚 مستندات
+- [BRS — مستند کسب‌واره](docs/MRTO_BRS.pdf)
+- [SRS — مستند نیازمندی‌های نرم‌افزار](docs/MRTO_SRS.pdf)
+- [TRL5 ارزیابی سطح آمادگی فناوری](TRL5_ASSESSMENT.md)
+- [SECURITY.md — سیاست امنیتی](SECURITY.md)

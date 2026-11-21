@@ -1,0 +1,90 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# MRTO Helm values — production defaults
+# Override per-environment with `helm install -f values-staging.yaml mrto ./deploy/helm/mrto`
+# ─────────────────────────────────────────────────────────────────────────────
+replicaCount: 2
+
+image:
+  repository: ghcr.io/parsasohrab1/inno-marjan-petrochemical-
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+  host: mrto.example.com
+  tls:
+    enabled: true
+    secretName: mrto-tls
+
+resources:
+  limits:
+    cpu: "2"
+    memory: 2Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+persistence:
+  data:
+    enabled: true
+    size: 5Gi
+    storageClass: standard
+    accessMode: ReadWriteOnce
+  models:
+    enabled: true
+    size: 1Gi
+    storageClass: standard
+    accessMode: ReadWriteMany
+
+secrets:
+  jwtSecret: "REPLACE_ME"
+  adminUser: "admin"
+  adminPass: "REPLACE_ME"
+
+env:
+  ENV: production
+  LOG_LEVEL: INFO
+
+# Frontend (nginx) sidecar
+frontend:
+  enabled: true
+  image: nginx:1.27-alpine
+  replicas: 2
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+networkPolicy:
+  enabled: true

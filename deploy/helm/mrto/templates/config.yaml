@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  labels:
+    {{- include "mrto.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  MRTO_JWT_SECRET: {{ .Values.secrets.jwtSecret | quote }}
+  MRTO_ADMIN_USER: {{ .Values.secrets.adminUser | quote }}
+  MRTO_ADMIN_PASS: {{ .Values.secrets.adminPass | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "mrto.labels" . | nindent 4 }}
+data:
+  MRTO_DB_PATH: "/app/data/mrto.sqlite3"
+  MRTO_MODELS_DIR: "/app/models"
+  ENV: {{ .Values.env.ENV | quote }}
+  LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}

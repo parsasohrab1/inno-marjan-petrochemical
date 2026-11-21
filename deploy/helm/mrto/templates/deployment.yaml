@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-backend
+  labels:
+    {{- include "mrto.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-backend
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mrto.selectorLabels" . | nindent 6 }}
+      app: {{ .Release.Name }}-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "mrto.selectorLabels" . | nindent 8 }}
+        app: {{ .Release.Name }}-backend
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: backend
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: models
+              mountPath: /app/models
+      volumes:
+        - name: data
+          {{- if .Values.persistence.data.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: models
+          {{- if .Values.persistence.models.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-models
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-backend
+  labels:
+    {{- include "mrto.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: {{ .Release.Name }}-backend
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: 8000
+---
+{{- if .Values.persistence.data.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  labels:
+    {{- include "mrto.labels" . | nindent 4 }}
+spec:
+  accessModes: [{{ .Values.persistence.data.accessMode }}]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.data.size }}
+  storageClassName: {{ .Values.persistence.data.storageClass }}
+{{- end }}
+---
+{{- if .Values.persistence.models.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-models
+  labels:
+    {{- include "mrto.labels" . | nindent 4 }}
+spec:
+  accessModes: [{{ .Values.persistence.models.accessMode }}]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.models.size }}
+  storageClassName: {{ .Values.persistence.models.storageClass }}
+{{- end }}

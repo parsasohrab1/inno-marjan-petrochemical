@@ -1,0 +1,323 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# MRTO Kubernetes deployment manifests (TRL 5 → staging/production)
+# Namespace: mrto
+# Apply: kubectl apply -f deploy/k8s/
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mrto
+  labels:
+    app.kubernetes.io/name: mrto
+    app.kubernetes.io/part-of: marjan-petrochemical
+---
+# ConfigMap — non-secret runtime configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mrto-config
+  namespace: mrto
+data:
+  MRTO_DB_PATH: "/app/data/mrto.sqlite3"
+  MRTO_MODELS_DIR: "/app/models"
+  ENV: "production"
+  LOG_LEVEL: "INFO"
+---
+# Secret — JWT signing key (replace with sealed-secret / external-secret in prod)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mrto-secrets
+  namespace: mrto
+type: Opaque
+stringData:
+  MRTO_JWT_SECRET: "REPLACE_WITH_KUBECTL_CREATE_SECRET"
+  MRTO_ADMIN_USER: "admin"
+  MRTO_ADMIN_PASS: "REPLACE_WITH_KUBECTL_CREATE_SECRET"
+---
+# Deployment — backend (2 replicas)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mrto-backend
+  namespace: mrto
+  labels:
+    app: mrto-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mrto-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: mrto-backend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: backend
+          image: ghcr.io/parsasohrab1/inno-marjan-petrochemical-:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: mrto-config
+            - secretRef:
+                name: mrto-secrets
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: models
+              mountPath: /app/models
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mrto-data
+        - name: models
+          persistentVolumeClaim:
+            claimName: mrto-models
+        - name: tmp
+          emptyDir: {}
+---
+# Deployment — frontend (nginx serving dashboard + reverse proxy)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mrto-frontend
+  namespace: mrto
+  labels:
+    app: mrto-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mrto-frontend
+  template:
+    metadata:
+      labels:
+        app: mrto-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+---
+# Service — backend (ClusterIP)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mrto-backend
+  namespace: mrto
+spec:
+  selector:
+    app: mrto-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+---
+# Service — frontend (ClusterIP, exposed via Ingress)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mrto-frontend
+  namespace: mrto
+spec:
+  selector:
+    app: mrto-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+---
+# HPA — auto-scale backend on CPU + memory
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mrto-backend
+  namespace: mrto
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mrto-backend
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+---
+# Ingress — public entry (set MRTO_HOST to your domain)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mrto
+  namespace: mrto
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "20m"
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - mrto.example.com
+      secretName: mrto-tls
+  rules:
+    - host: mrto.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mrto-frontend
+                port:
+                  number: 80
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: mrto-backend
+                port:
+                  number: 8000
+---
+# PVC — backend data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mrto-data
+  namespace: mrto
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard
+---
+# PVC — trained models
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mrto-models
+  namespace: mrto
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard
+---
+# NetworkPolicy — restrict backend ingress to frontend namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mrto-backend-policy
+  namespace: mrto
+spec:
+  podSelector:
+    matchLabels:
+      app: mrto-backend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mrto-frontend
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# PodDisruptionBudget — keep ≥1 backend pod available during drains
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mrto-backend
+  namespace: mrto
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mrto-backend
