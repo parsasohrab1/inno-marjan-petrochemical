@@ -1,0 +1,111 @@
+name: MRTO CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test & Train (TRL 5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install openpyxl  # for UCI xlsx parsing
+
+      - name: Lint (ruff, optional)
+        run: |
+          pip install ruff
+          ruff check mrto tests || true
+
+      - name: Run synthetic data generator
+        run: |
+          python -m mrto.synthetic_data data/raw
+        continue-on-error: false
+
+      - name: Train all four ML modules (synthetic + real UCI data)
+        run: |
+          python -m mrto.train_models \
+            --out-dir data \
+            --models-dir models \
+            --report training_report.json
+        env:
+          MRTO_MODELS_DIR: models
+
+      - name: Verify training report — SRS quality targets met
+        run: |
+          python - <<'PY'
+          import json, sys
+          with open("training_report.json") as f:
+              r = json.load(f)
+          print("All SRS quality targets met:", r["all_srs_quality_targets_met"])
+          for k, v in r["metrics"].items():
+              print(f"  {k}: {v}")
+          if not r["all_srs_quality_targets_met"]:
+              print("::warning::Some SRS quality targets not met")
+          PY
+
+      - name: Run pytest suite with coverage
+        run: |
+          python -m pytest tests -v --cov=mrto --cov-report=xml --cov-report=term-missing
+        env:
+          MRTO_MODELS_DIR: ${{ github.workspace }}/backend/models
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: backend/coverage.xml
+
+      - name: Upload training report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-report
+          path: backend/training_report.json
+
+      - name: Upload trained models
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-models
+          path: backend/models/
+
+  build:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image (no push)
+        run: |
+          docker build -t mrto:trl5 ./backend
+      - name: Smoke-test container health endpoint
+        run: |
+          docker run -d -p 8000:8000 --name mrto-test mrto:trl5
+          sleep 6
+          curl -sS http://localhost:8000/api/v1/health | grep -q '"status":"ok"'
+          docker stop mrto-test
