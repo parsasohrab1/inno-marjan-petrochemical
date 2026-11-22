@@ -27,8 +27,12 @@ import time
 import base64
 import hmac
 import hashlib
+import logging
 import secrets
+import threading
 from datetime import datetime, timezone
+
+logger = logging.getLogger("mrto")
 from typing import Optional
 
 import pandas as pd
@@ -65,8 +69,22 @@ def _read_conn(app, role: str = "replica"):
         return _db_adapter.get_conn(app.state.db_path, role=role)
     return dbm.get_conn(app.state.db_path)
 
-MODELS_DIR = os.environ.get("MRTO_MODELS_DIR",
-                              "/home/z/my-project/download/mrto/models")
+def _resolve_models_dir() -> str:
+    """Prefer MRTO_MODELS_DIR when that folder exists.
+
+    Fall back to the repository models/ directory so a Windows launch works
+    without the old hardcoded Linux path.
+    """
+    env = os.environ.get("MRTO_MODELS_DIR")
+    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
+    if env and os.path.isdir(env):
+        return env
+    if os.path.isdir(repo):
+        return repo
+    return env or repo
+
+
+MODELS_DIR = _resolve_models_dir()
 METRICS_DIR = MODELS_DIR  # metrics json saved alongside models
 
 # Cache loaded models in-memory to avoid joblib.load on every request.
@@ -84,6 +102,89 @@ def _get_model(name: str):
         except Exception:
             return None
     return _MODEL_CACHE[name]
+
+
+_HOT_TUBES = ("T01-003", "T02-003")
+_DEGRADED_BURNERS = {"B01-L": 0.52, "B03-R": 0.40}
+
+
+def _live_loop(db_path: str) -> None:
+    """Append one furnace sample every 5 seconds while MRTO_LIVE_SIM=1."""
+    import random
+    for _ in range(40):
+        time.sleep(1)
+        try:
+            with dbm.get_conn(db_path) as conn:
+                n = conn.execute("SELECT COUNT(*) FROM temperature_readings").fetchone()[0]
+            if n:
+                break
+        except Exception:
+            logger.exception("live simulator waiting for readings")
+    while True:
+        try:
+            with dbm.get_conn(db_path) as conn:
+                tubes = dbm.get_tubes(conn)
+                if not tubes:
+                    time.sleep(5)
+                    continue
+                prev_rows = conn.execute(
+                    """
+                    SELECT tube_id, wall_temp_c FROM temperature_readings
+                    WHERE id IN (SELECT MAX(id) FROM temperature_readings GROUP BY tube_id)
+                    """
+                ).fetchall()
+                prev = {r["tube_id"]: float(r["wall_temp_c"]) for r in prev_rows}
+                cur = conn.execute("SELECT MAX(ts_minute) FROM temperature_readings").fetchone()
+                ts = int(cur[0] or 0) + 1
+                for tube in tubes:
+                    tid = tube["tube_id"]
+                    base = prev.get(tid, 880.0)
+                    temp = base + random.uniform(-1.2, 1.2)
+                    if tid in _HOT_TUBES:
+                        temp = min(960.0, max(935.0, temp if base >= 920 else 942.0))
+                    else:
+                        temp = min(910.0, max(840.0, temp))
+                    other = conn.execute(
+                        "SELECT AVG(wall_temp_c) FROM temperature_readings WHERE tube_id != ?",
+                        (tid,),
+                    ).fetchone()[0]
+                    mean_ref = other if other is not None else 880.0
+                    dbm.insert_temperature_reading(conn, tid, ts, round(temp, 1), "live")
+                    if temp > mean_ref + 30:
+                        open_same = conn.execute(
+                            "SELECT 1 FROM alerts WHERE tube_id=? AND module='module1' AND status='open'",
+                            (tid,),
+                        ).fetchone()
+                        if open_same is None:
+                            dbm.insert_alert(
+                                conn, tid, ts, "high", "module1",
+                                f"Hotspot on {tid}: {temp:.1f}°C",
+                            )
+                latest = conn.execute(
+                    """
+                    SELECT burner_id, fuel_flow, intensity, angle FROM burner_status
+                    WHERE id IN (SELECT MAX(id) FROM burner_status GROUP BY burner_id)
+                    """
+                ).fetchall()
+                for row in latest:
+                    bid = row["burner_id"]
+                    intensity = float(row["intensity"] or 0.9)
+                    fuel = float(row["fuel_flow"] or 190)
+                    if bid in _DEGRADED_BURNERS:
+                        intensity = _DEGRADED_BURNERS[bid] + random.uniform(-0.02, 0.02)
+                        fuel = 250 + random.uniform(-8, 8)
+                    else:
+                        intensity = min(1.15, max(0.85, intensity + random.uniform(-0.01, 0.01)))
+                        fuel = min(210, max(170, fuel + random.uniform(-4, 4)))
+                    angle = max(-15.0, min(15.0, float(row["angle"] or 0) + random.uniform(-0.4, 0.4)))
+                    conn.execute(
+                        "INSERT INTO burner_status (burner_id, ts_minute, fuel_flow, intensity, angle) "
+                        "VALUES (?,?,?,?,?)",
+                        (bid, ts, round(fuel, 1), round(intensity, 3), round(angle, 2)),
+                    )
+        except Exception:
+            logger.exception("live simulator tick failed")
+        time.sleep(5)
 
 
 def _avg_wall_temp_per_tube(conn, tube_ids: list[str]) -> dict[str, float]:
@@ -152,6 +253,10 @@ class TemperatureIngest(BaseModel):
     ts_minute: int = Field(ge=0, le=10_000_000)
     wall_temp_c: float = Field(ge=0, le=1500)
     source: str = Field(default="ir", max_length=32)
+
+
+class TemperatureBatch(BaseModel):
+    readings: list[TemperatureIngest] = Field(min_length=1, max_length=5000)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -520,8 +625,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         else:
             mean_t = 0.0
             hotspots = []
+        resolved_ts = ts_minute
+        if resolved_ts is None and readings:
+            resolved_ts = readings[0]["ts_minute"]
         return {
-            "ts_minute": ts_minute,
+            "ts_minute": resolved_ts,
             "n_tubes": len(readings),
             "mean_wall_temp_c": round(mean_t, 2),
             "hotspots": hotspots,
@@ -600,36 +708,56 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         temperature_map) instead of a hardcoded 880 °C, so the burner
         inefficiency prediction reflects actual furnace conditions.
         """
+        catalyst_activity = None
         with dbm.get_conn(app.state.db_path) as conn:
             rows = conn.execute(
-                "SELECT burner_id, ts_minute, fuel_flow, intensity, angle FROM burner_status "
-                "ORDER BY ts_minute DESC LIMIT 200"
+                """
+                SELECT burner_id, ts_minute, fuel_flow, intensity, angle
+                FROM burner_status
+                WHERE id IN (
+                    SELECT MAX(id) FROM burner_status GROUP BY burner_id
+                )
+                ORDER BY burner_id
+                """
             ).fetchall()
-            # Compute the real average wall temperature from the latest readings.
             overall_avg = conn.execute(
-                "SELECT AVG(wall_temp_c) FROM ("
-                "  SELECT wall_temp_c, ts_minute FROM temperature_readings "
-                "  ORDER BY ts_minute DESC LIMIT 500"
-                ")"
+                """
+                SELECT AVG(wall_temp_c) FROM temperature_readings
+                WHERE id IN (SELECT MAX(id) FROM temperature_readings GROUP BY tube_id)
+                """
             ).fetchone()[0]
         burners_list = [dict(r) for r in rows]
-        # Apply model if available
+        mean_wall = float(overall_avg) if overall_avg is not None else 880.0
         model = _get_model("module4_burner_catalyst.joblib")
-        if burners_list and model is not None:
+        if model is not None:
             try:
-                df = pd.DataFrame(burners_list).rename(columns={"fuel_flow": "fuel_flow_nm3h", "angle": "angle_deg"})
-                # Use real average wall temp; fall back to nominal 880 if no readings yet.
-                df["age_h"] = 2000  # TODO: persist per-burner age_h in burner_status
-                df["avg_tube_t_c"] = float(overall_avg) if overall_avg is not None else 880.0
-                df["intensity"] = df["intensity"].fillna(0.9)
-                df["fuel_flow_nm3h"] = df["fuel_flow_nm3h"].fillna(200)
-                df["angle_deg"] = df["angle_deg"].fillna(0)
-                preds = model.predict_inefficient(df)
-                for b, p in zip(burners_list, preds):
-                    b["inefficient"] = int(p)
+                if burners_list:
+                    df = pd.DataFrame(burners_list).rename(
+                        columns={"fuel_flow": "fuel_flow_nm3h", "angle": "angle_deg"}
+                    )
+                    df["age_h"] = 2000
+                    df["avg_tube_t_c"] = mean_wall
+                    df["intensity"] = df["intensity"].fillna(0.9)
+                    df["fuel_flow_nm3h"] = df["fuel_flow_nm3h"].fillna(190)
+                    df["angle_deg"] = df["angle_deg"].fillna(0)
+                    preds = model.predict_inefficient(df)
+                    for b, p in zip(burners_list, preds):
+                        b["inefficient"] = int(p)
+                activity = model.predict_activity(pd.DataFrame([{
+                    "age_h": 8000.0,
+                    "t_out_avg_c": mean_wall,
+                    "sc_avg": 3.0,
+                    "dp_bar": 1.6,
+                }]))
+                catalyst_activity = round(float(activity[0]), 4)
             except Exception:
-                pass
-        return {"burners": burners_list, "n": len(burners_list)}
+                logger.exception("burner/catalyst model failed")
+        return {
+            "burners": burners_list,
+            "n": len(burners_list),
+            "catalyst_activity": catalyst_activity,
+            "mean_wall_temp_c": round(mean_wall, 2),
+        }
 
     @app.get("/api/v1/alerts")
     def alerts(status_filter: str = "open",
@@ -681,7 +809,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             if os.path.exists(path):
                 try:
                     with open(path, "r", encoding="utf-8") as f:
-                        out[name] = json.load(f)
+                        data = json.load(f)
+                    if name == "module1_temperature_map" and isinstance(data, dict):
+                        data.setdefault("rmse_c", data.get("rmse"))
+                        data.setdefault("mae_c", data.get("mae"))
+                    out[name] = data
                 except Exception as e:
                     out[name] = {"error": str(e)}
             else:
@@ -726,9 +858,63 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                                                   req.wall_temp_c, req.source)
             obs.inc_ingest()
             if req.wall_temp_c > mean_ref + 30:
-                dbm.insert_alert(conn, req.tube_id, req.ts_minute, "high", "module1",
-                                  f"Hotspot on {req.tube_id}: {req.wall_temp_c:.1f}°C")
+                open_same = conn.execute(
+                    "SELECT 1 FROM alerts WHERE tube_id=? AND module='module1' AND status='open'",
+                    (req.tube_id,),
+                ).fetchone()
+                if open_same is None:
+                    dbm.insert_alert(conn, req.tube_id, req.ts_minute, "high", "module1",
+                                      f"Hotspot on {req.tube_id}: {req.wall_temp_c:.1f}°C")
         return {"ok": True, "reading_id": rid}
+
+    @app.post("/api/v1/ingest/temperature/batch",
+              tags=["ingest"],
+              summary="Ingest a batch of temperature readings (manager/operator/it)")
+    def ingest_batch(req: TemperatureBatch,
+                      _user: dict = Depends(current_user)) -> dict:
+        if _user.get("role") not in ("manager", "operator", "it"):
+            raise HTTPException(status_code=403, detail="Insufficient role for ingestion")
+        last_id = None
+        with dbm.get_conn(app.state.db_path) as conn:
+            for item in req.readings:
+                existing = conn.execute(
+                    "SELECT 1 FROM tubes WHERE tube_id=?", (item.tube_id,)
+                ).fetchone()
+                if existing is None:
+                    try:
+                        parts = item.tube_id.split("-")
+                        row = int(parts[0][1:])
+                        col = int(parts[1])
+                    except Exception:
+                        row, col = 1, 1
+                    conn.execute(
+                        "INSERT INTO tubes (tube_id, row, col, material, installed_at_days_ago, "
+                        "last_replaced_days_ago, design_life_h) VALUES (?,?,?,?,?,?,?)",
+                        (item.tube_id, row, col, "HP-Modified", 200, 200, 100000.0),
+                    )
+                other = conn.execute(
+                    "SELECT AVG(wall_temp_c) FROM temperature_readings WHERE tube_id != ?",
+                    (item.tube_id,),
+                ).fetchone()[0]
+                overall = conn.execute(
+                    "SELECT AVG(wall_temp_c) FROM temperature_readings"
+                ).fetchone()[0]
+                mean_ref = other if other is not None else (overall if overall is not None else 880.0)
+                last_id = dbm.insert_temperature_reading(
+                    conn, item.tube_id, item.ts_minute, item.wall_temp_c, item.source
+                )
+                obs.inc_ingest()
+                if item.wall_temp_c > mean_ref + 30:
+                    open_same = conn.execute(
+                        "SELECT 1 FROM alerts WHERE tube_id=? AND module='module1' AND status='open'",
+                        (item.tube_id,),
+                    ).fetchone()
+                    if open_same is None:
+                        dbm.insert_alert(
+                            conn, item.tube_id, item.ts_minute, "high", "module1",
+                            f"Hotspot on {item.tube_id}: {item.wall_temp_c:.1f}°C",
+                        )
+        return {"ok": True, "n": len(req.readings), "reading_id": last_id}
 
     # ── Phase 3: Prometheus metrics + deep health ─────────────────────
     @app.get("/metrics")
@@ -837,6 +1023,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "health": "/api/v1/health",
         }
 
+    if os.environ.get("MRTO_LIVE_SIM") in ("1", "true", "True", "yes"):
+        threading.Thread(
+            target=_live_loop, args=(db_path,), name="mrto-live", daemon=True
+        ).start()
     return app
 
 

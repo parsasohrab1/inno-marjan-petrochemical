@@ -10,7 +10,7 @@ name: mrto
 
 services:
   backend:
-    image: ${MRTO_IMAGE:-ghcr.io/parsasohrab1/inno-marjan-petrochemical-:latest}
+    image: ${MRTO_IMAGE:-ghcr.io/parsasohrab1/inno-marjan-petrochemical:latest}
     container_name: mrto-backend
     environment:
       MRTO_DB_PATH: ${MRTO_DB_PATH:-/app/data/mrto.sqlite3}

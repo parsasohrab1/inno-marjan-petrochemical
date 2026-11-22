@@ -21,10 +21,20 @@ from typing import Iterable
 
 import bcrypt
 
-DEFAULT_DB_PATH = os.environ.get(
-    "MRTO_DB_PATH",
-    "/home/z/my-project/download/mrto/data/mrto.sqlite3"
-)
+def _default_db_path() -> str:
+    """SQLite path. MRTO_DB_PATH wins; otherwise a file inside this repo.
+
+    The old default was a developer Linux path and broke Windows launches
+    that did not export the variable.
+    """
+    env = os.environ.get("MRTO_DB_PATH")
+    if env:
+        return env
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return os.path.join(repo_root, "backend", "data", "mrto.sqlite3")
+
+
+DEFAULT_DB_PATH = _default_db_path()
 
 # Known insecure placeholders — refusing to seed these prevents shipping the
 # default credential to production. Operators must set MRTO_ADMIN_PASS env
@@ -161,11 +171,15 @@ CREATE INDEX IF NOT EXISTS idx_mv_module ON model_versions(module, is_active, tr
 
 @contextmanager
 def get_conn(db_path: str = DEFAULT_DB_PATH):
-    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    parent = os.path.dirname(db_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
     # Enable foreign-key enforcement (off by default in SQLite).
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     try:
         yield conn
         conn.commit()
@@ -260,8 +274,15 @@ def get_temperature_map(conn, ts_minute: int | None = None) -> list[dict]:
             return []
         ts_minute = row[0]
     rows = conn.execute(
-        "SELECT tube_id, wall_temp_c, source, ts_minute FROM temperature_readings "
-        "WHERE ts_minute=? ORDER BY tube_id", (ts_minute,)
+        """
+        SELECT tube_id, wall_temp_c, source, ts_minute FROM temperature_readings
+        WHERE id IN (
+            SELECT MAX(id) FROM temperature_readings
+            WHERE ts_minute=? GROUP BY tube_id
+        )
+        ORDER BY tube_id
+        """,
+        (ts_minute,),
     ).fetchall()
     return [dict(r) for r in rows]
 

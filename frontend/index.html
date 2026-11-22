@@ -286,7 +286,7 @@
       <p style="color:var(--text-soft); font-size:0.88rem;">برآورد عمر باقیمانده هر لوله با مدل ترکیبی خزش-یادگیری ماشین (Larson-Miller + RandomForest). لوله‌های با RUL &lt; ۲۰٬۰۰۰ ساعت در اولویت بازرسی هستند.</p>
       <div class="scroll-wrap">
         <table class="data" id="rul-table">
-          <thead><tr><th>لوله</th><th>عمر باقیمانده (h)</th><th>احتمال خرابی ۹۰ روزه</th><th>سطح ریسک</th><th>گauge</th></tr></thead>
+          <thead><tr><th>لوله</th><th>عمر باقیمانده (h)</th><th>احتمال خرابی ۹۰ روزه</th><th>سطح ریسک</th><th>مصرف عمر</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -314,7 +314,8 @@
   <div class="tab-content" data-content="burners">
     <div class="panel">
       <h2>ماژول ۴ — پایش مشعل‌ها و کاتالیست</h2>
-      <p style="color:var(--text-soft); font-size:0.88rem;">وضعیت مشعل‌ها به همراه برچسب ناکارآمدی پیش‌بینی‌شده با مدل ماژول ۴. شاخص افت فعالیت کاتالیست از داده‌های دبی و افت فشار برآورد می‌شود.</p>
+      <p style="color:var(--text-soft); font-size:0.88rem;">فقط آخرین قرائت هر مشعل نشان داده می‌شود. برچسب ناکارآمدی از مدل ماژول ۴ است.</p>
+      <p id="catalyst-activity" style="color:var(--accent); font-weight:600;">فعالیت کاتالیست: —</p>
       <div class="scroll-wrap">
         <table class="data" id="burner-table">
           <thead><tr><th>مشعل</th><th>شدت</th><th>دبی سوخت (Nm³/h)</th><th>زاویه (°)</th><th>وضعیت پیش‌بینی</th></tr></thead>
@@ -351,17 +352,14 @@
   MRTO v1.0.0 — توسعه‌یافته برای پتروشیمی مرجان | سطح آمادگی فناوری TRL 5 | داده‌ها: مصنوعی فیزیک‌محور + واقعی (UCI)
 </footer>
 
+<script src="api-config.js"></script>
 <script>
-const API_BASE = (window.location.origin && window.location.pathname.includes('/api'))
-  ? '' : 'http://localhost:8000';
-let API = API_BASE;
-// Auto-detect if served by backend (same origin)
-if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
-  if (window.location.port === '8000' || window.location.pathname.startsWith('/api')) {
-    API = '';
-  } else {
-    API = 'http://localhost:8000';
-  }
+const _apiQuery = new URLSearchParams(window.location.search).get('api');
+let API = _apiQuery
+  ? _apiQuery.replace(/\/$/, '')
+  : (window.MRTO_API ? String(window.MRTO_API).replace(/\/$/, '') : '');
+if (!API && window.location.port !== '8000' && !window.location.pathname.startsWith('/api')) {
+  API = 'http://127.0.0.1:8000';
 }
 
 const $ = (s) => document.querySelector(s);
@@ -670,6 +668,12 @@ $('#opt-run').addEventListener('click', async () => {
 async function loadBurners() {
   try {
     const b = await getJSON('/api/v1/burners');
+    const cat = $('#catalyst-activity');
+    if (cat) {
+      cat.textContent = b.catalyst_activity == null
+        ? 'فعالیت کاتالیست: —'
+        : `فعالیت کاتالیست: ${(Number(b.catalyst_activity) * 100).toFixed(1)}٪`;
+    }
     const tbody = $('#burner-table tbody');
     const rows = (b.burners || []).map(br => {
       const statusTxt = br.inefficient ? 'ناکارآمد' : 'نرمال';
@@ -759,7 +763,9 @@ async function loadMetrics() {
       const data = m[k];
       if (!data) return;
       SRS_TARGETS[k].forEach(([key, label, ok]) => {
-        const v = data[key];
+        let v = data[key];
+        if ((v === undefined || v === null) && key === 'rmse_c') v = data.rmse;
+        if ((v === undefined || v === null) && key === 'mae_c') v = data.mae;
         if (v === undefined || v === null) return;
         const passed = ok(v);
         rows.push(el('tr', {},
@@ -781,19 +787,16 @@ async function loadMetrics() {
 // overlay is shown and data loads after a successful login (see hideLogin()).
 // In dev mode (MRTO_ALLOW_ANON=1) the backend serves anonymous viewers, so
 // these calls succeed and the dashboard renders immediately.
-if (AUTH.access) {
-  loadOverview();
-  loadRUL();
-  loadBurners();
-  loadAlerts();
-  loadMetrics();
-  setInterval(loadOverview, 30000);
-} else {
-  // Try once anyway — anonymous read may be allowed in dev; if it 401s,
-  // the login overlay stays up (already shown) and the user logs in.
-  Promise.allSettled([loadOverview(), loadRUL(), loadBurners(), loadAlerts(), loadMetrics()]);
-  setInterval(() => { if (AUTH.access) loadOverview(); }, 30000);
+function refreshLive() {
+  return Promise.allSettled([loadOverview(), loadRUL(), loadBurners(), loadAlerts()]);
 }
+refreshLive().then((results) => {
+  if (results[0] && results[0].status === 'fulfilled') {
+    $('#login-overlay').classList.add('hidden');
+  }
+});
+loadMetrics();
+setInterval(refreshLive, 5000);
 </script>
 </body>
 </html>

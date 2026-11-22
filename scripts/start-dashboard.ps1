@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     MRTO — Methanol Reformer Tube & Operation Optimizer
     One-shot launcher that brings up the full stack on Windows / PowerShell.
@@ -65,7 +65,6 @@ param(
 # Bootstrap: strict error handling, colours, repo root
 # ─────────────────────────────────────────────────────────────────────────────
 $ErrorActionPreference = 'Stop'
-$PSStyle.ProcessUseNewLine = $true   # PowerShell 7+ — keep job output on its own line
 
 function Write-Step  { param($m) Write-Host "`n[step] $m" -ForegroundColor Cyan }
 function Write-OK    { param($m) Write-Host "  [ok]  $m" -ForegroundColor Green }
@@ -78,7 +77,7 @@ $RepoRoot  = Split-Path -Parent $ScriptDir
 $BackendDir  = Join-Path $RepoRoot 'backend'
 $FrontendDir = Join-Path $RepoRoot 'frontend'
 $ModelsDir   = Join-Path $RepoRoot 'models'
-$DataRawDir  = Join-Path $RepoRoot 'data' 'raw'
+$DataRawDir  = Join-Path (Join-Path $RepoRoot 'data') 'raw'
 $VenvDir     = Join-Path $RepoRoot '.venv'
 
 Write-Host "=====================================================" -ForegroundColor White
@@ -134,7 +133,7 @@ if (-not (Test-Path $VenvDir)) {
 }
 
 # Activate for this session
-$VenvPython = Join-Path $VenvDir 'Scripts' 'python.exe'
+$VenvPython = Join-Path (Join-Path $VenvDir 'Scripts') 'python.exe'
 if (-not (Test-Path $VenvPython)) {
     Write-Err "Virtual env python not found at $VenvPython"
     exit 1
@@ -158,14 +157,14 @@ Write-OK "fastapi, uvicorn, sklearn, pandas, numpy, joblib, pyjwt, bcrypt instal
 Write-Step "Checking synthetic data"
 
 $expectedData = @(
-    Join-Path $DataRawDir 'synthetic_tubes.csv',
-    Join-Path $DataRawDir 'synthetic_timeseries.csv',
-    Join-Path $DataRawDir 'synthetic_temp_map.csv',
-    Join-Path $DataRawDir 'synthetic_rul.csv',
-    Join-Path $DataRawDir 'synthetic_sc_opt.csv',
-    Join-Path $DataRawDir 'synthetic_burner_profiles.csv',
-    Join-Path $DataRawDir 'synthetic_burner_status.csv',
-    Join-Path $DataRawDir 'synthetic_catalyst.csv'
+    (Join-Path $DataRawDir 'synthetic_tubes.csv'),
+    (Join-Path $DataRawDir 'synthetic_timeseries.csv'),
+    (Join-Path $DataRawDir 'synthetic_temp_map.csv'),
+    (Join-Path $DataRawDir 'synthetic_rul.csv'),
+    (Join-Path $DataRawDir 'synthetic_sc_opt.csv'),
+    (Join-Path $DataRawDir 'synthetic_burner_profiles.csv'),
+    (Join-Path $DataRawDir 'synthetic_burner_status.csv'),
+    (Join-Path $DataRawDir 'synthetic_catalyst.csv')
 )
 $missingData = $expectedData | Where-Object { -not (Test-Path $_) }
 
@@ -188,10 +187,10 @@ if ($missingData.Count -gt 0) {
 Write-Step "Checking trained models"
 
 $expectedModels = @(
-    Join-Path $ModelsDir 'module1_temp_map.joblib',
-    Join-Path $ModelsDir 'module2_rul.joblib',
-    Join-Path $ModelsDir 'module3_optimization.joblib',
-    Join-Path $ModelsDir 'module4_burner_catalyst.joblib'
+    (Join-Path $ModelsDir 'module1_temp_map.joblib'),
+    (Join-Path $ModelsDir 'module2_rul.joblib'),
+    (Join-Path $ModelsDir 'module3_optimization.joblib'),
+    (Join-Path $ModelsDir 'module4_burner_catalyst.joblib')
 )
 $missingModels = $expectedModels | Where-Object { -not (Test-Path $_) }
 
@@ -214,7 +213,7 @@ if ($missingModels.Count -gt 0) {
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Environment for backend
 # ─────────────────────────────────────────────────────────────────────────────
-$DbPath = Join-Path $BackendDir 'data' 'mrto.sqlite3'
+$DbPath = Join-Path (Join-Path $BackendDir 'data') 'mrto.sqlite3'
 $DbDir = Split-Path -Parent $DbPath
 if (-not (Test-Path $DbDir)) { New-Item -ItemType Directory -Path $DbDir -Force | Out-Null }
 
@@ -224,67 +223,105 @@ $backendEnv = @{
     MRTO_JWT_SECRET  = 'live-demo-secret-32chars-1234567890'
     MRTO_ADMIN_USER  = 'admin'
     MRTO_ADMIN_PASS  = 'admin123'
+    MRTO_LIVE_SIM    = '1'
     PYTHONUNBUFFERED = '1'
 }
+$LogDir = Join-Path $RepoRoot 'logs'
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+$PidFile = Join-Path $LogDir 'mrto.pids.json'
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. Kill any stale instances on the chosen ports
+# 7. Stop a previous MRTO launch, then pick ports that are actually free.
+#    Do not kill unrelated listeners (local Apache/IIS may already own 8000/8080).
 # ─────────────────────────────────────────────────────────────────────────────
-Write-Step "Freeing ports $BackendPort and $DashboardPort"
+Write-Step "Selecting free ports"
 
-foreach ($port in @($BackendPort, $DashboardPort)) {
-    $conns = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
-    foreach ($c in $conns) {
-        try {
-            Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
-            Write-Warn "Killed PID $($c.OwningProcess) on port $port"
-        } catch { }
+if (Test-Path $PidFile) {
+    try {
+        $old = Get-Content $PidFile -Raw | ConvertFrom-Json
+        foreach ($procId in @($old.backend, $old.dashboard)) {
+            if ($procId) {
+                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                Write-Warn "Stopped previous MRTO PID $procId"
+            }
+        }
+    } catch { }
+    Start-Sleep -Seconds 1
+}
+
+function Test-PortFree([int] $Port) {
+    $listener = $null
+    try {
+        $listener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) { $listener.Stop() }
     }
 }
+function Find-FreePort([int] $Preferred) {
+    for ($p = $Preferred; $p -lt ($Preferred + 30); $p++) {
+        if (Test-PortFree $p) { return $p }
+    }
+    throw "No free TCP port found near $Preferred"
+}
+
+$BackendPort = Find-FreePort $BackendPort
+$DashboardPort = Find-FreePort $DashboardPort
+if ($BackendPort -eq $DashboardPort) { $DashboardPort = Find-FreePort ($DashboardPort + 1) }
+Write-OK "Backend port $BackendPort, dashboard port $DashboardPort"
+
+$apiConfig = "window.MRTO_API = 'http://127.0.0.1:$BackendPort';"
+Set-Content -Path (Join-Path $FrontendDir 'api-config.js') -Value $apiConfig -Encoding ascii
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. Start FastAPI backend (background job)
 # ─────────────────────────────────────────────────────────────────────────────
 Write-Step "Starting FastAPI backend on port $BackendPort"
 
-Push-Location $BackendDir
-try {
-    $env:MRTO_DB_PATH    = $backendEnv.MRTO_DB_PATH
-    $env:MRTO_MODELS_DIR = $backendEnv.MRTO_MODELS_DIR
-    $env:MRTO_JWT_SECRET = $backendEnv.MRTO_JWT_SECRET
-    $env:MRTO_ADMIN_USER = $backendEnv.MRTO_ADMIN_USER
-    $env:MRTO_ADMIN_PASS = $backendEnv.MRTO_ADMIN_PASS
-    $env:PYTHONUNBUFFERED = '1'
+# Start-Process inherits this process environment. Do not use Start-Job:
+# jobs do not keep the backend working directory, so `mrto` fails to import.
+$env:MRTO_DB_PATH     = $backendEnv.MRTO_DB_PATH
+$env:MRTO_MODELS_DIR  = $backendEnv.MRTO_MODELS_DIR
+$env:MRTO_JWT_SECRET  = $backendEnv.MRTO_JWT_SECRET
+$env:MRTO_ADMIN_USER  = $backendEnv.MRTO_ADMIN_USER
+$env:MRTO_ADMIN_PASS  = $backendEnv.MRTO_ADMIN_PASS
+$env:MRTO_LIVE_SIM    = $backendEnv.MRTO_LIVE_SIM
+$env:PYTHONUNBUFFERED = '1'
 
-    $backendJob = Start-Job -Name 'mrto-backend' -ScriptBlock {
-        param($VenvPython, $Port)
-        & $VenvPython -m uvicorn mrto.app:app --host 0.0.0.0 --port $Port
-    } -ArgumentList $VenvPython, $BackendPort
+$backendOut = Join-Path $LogDir 'backend.out.log'
+$backendErr = Join-Path $LogDir 'backend.err.log'
+Remove-Item $backendOut, $backendErr -ErrorAction SilentlyContinue
+$backendProc = Start-Process -FilePath $VenvPython `
+    -ArgumentList @('-m', 'uvicorn', 'mrto.app:app', '--host', '0.0.0.0', '--port', "$BackendPort") `
+    -WorkingDirectory $BackendDir `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $backendOut `
+    -RedirectStandardError $backendErr `
+    -PassThru
 
-    # Wait for backend to be ready (max 30 seconds)
-    $ready = $false
-    for ($i = 1; $i -le 15; $i++) {
-        Start-Sleep -Seconds 2
-        try {
-            $resp = Invoke-WebRequest -Uri "http://localhost:$BackendPort/api/v1/health" `
-                                      -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
-            if ($resp.StatusCode -eq 200) {
-                $ready = $true
-                $healthJson = $resp.Content | ConvertFrom-Json
-                Write-OK "Backend up — status: $($healthJson.status), n_tubes: $($healthJson.n_tubes)"
-                break
-            }
-        } catch {
-            Write-Host "." -NoNewline
+$ready = $false
+for ($i = 1; $i -le 20; $i++) {
+    Start-Sleep -Seconds 1
+    try {
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$BackendPort/api/v1/health" `
+                                  -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        if ($resp.StatusCode -eq 200) {
+            $ready = $true
+            $healthJson = $resp.Content | ConvertFrom-Json
+            Write-OK "Backend up — status: $($healthJson.status), n_tubes: $($healthJson.n_tubes), pid: $($backendProc.Id)"
+            break
         }
+    } catch {
+        Write-Host "." -NoNewline
     }
-    if (-not $ready) {
-        Write-Err "`nBackend failed to start. Job output:"
-        Receive-Job $backendJob | Write-Host
-        exit 1
-    }
-} finally {
-    Pop-Location
+}
+if (-not $ready) {
+    Write-Err "Backend failed to start. See $backendErr"
+    if (Test-Path $backendErr) { Get-Content $backendErr -Tail 40 | Write-Host }
+    exit 1
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -292,27 +329,42 @@ try {
 # ─────────────────────────────────────────────────────────────────────────────
 Write-Step "Starting dashboard on port $DashboardPort"
 
-Push-Location $FrontendDir
-try {
-    $dashboardJob = Start-Job -Name 'mrto-dashboard' -ScriptBlock {
-        param($VenvPython, $Port, $FrontendDir)
-        Set-Location $FrontendDir
-        & $VenvPython -m http.server $Port --bind 0.0.0.0
-    } -ArgumentList $VenvPython, $DashboardPort, $FrontendDir
+$dashOut = Join-Path $LogDir 'dashboard.out.log'
+$dashErr = Join-Path $LogDir 'dashboard.err.log'
+Remove-Item $dashOut, $dashErr -ErrorAction SilentlyContinue
+# Windows PowerShell joins -ArgumentList on spaces, so quote paths that contain spaces.
+$dashArgs = "-m http.server $DashboardPort --bind 127.0.0.1 --directory `"$FrontendDir`""
+$dashboardProc = Start-Process -FilePath $VenvPython `
+    -ArgumentList $dashArgs `
+    -WorkingDirectory $FrontendDir `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $dashOut `
+    -RedirectStandardError $dashErr `
+    -PassThru
 
+$dashReady = $false
+for ($i = 1; $i -le 8; $i++) {
     Start-Sleep -Seconds 1
     try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:$DashboardPort/index.html" `
-                                  -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$DashboardPort/index.html" `
+                                  -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
         if ($resp.StatusCode -eq 200) {
-            Write-OK "Dashboard serving index.html ($($resp.Content.Length) bytes)"
+            $dashReady = $true
+            Write-OK "Dashboard serving index.html ($($resp.Content.Length) bytes), pid: $($dashboardProc.Id)"
+            break
         }
-    } catch {
-        Write-Warn "Dashboard probe failed: $($_.Exception.Message)"
-    }
-} finally {
-    Pop-Location
+    } catch { }
 }
+if (-not $dashReady) {
+    Write-Warn "Dashboard probe failed. See $dashErr"
+    if (Test-Path $dashErr) { Get-Content $dashErr -Tail 20 | Write-Host }
+}
+
+@{
+    backend   = $backendProc.Id
+    dashboard = $dashboardProc.Id
+} | ConvertTo-Json | Set-Content -Path $PidFile -Encoding ascii
+Write-OK "PID file: $PidFile"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. Seed demo data so the dashboard shows realistic content
@@ -321,24 +373,23 @@ if (-not $NoSeed) {
     Write-Step "Seeding live demo data into backend"
 
     # ── Temperature readings via POST /api/v1/ingest/temperature ──
-    Write-Host "  → Temperature: 12 tubes × 60 minutes = 720 readings"
+    Write-Host "  → Temperature: 12 tubes × 60 minutes = 720 readings (one batch)"
     $tubes = @()
     for ($r = 1; $r -le 4; $r++) {
         for ($c = 1; $c -le 3; $c++) {
             $tubes += "T{0:D2}-{1:D3}" -f $r, $c
         }
     }
-    $baseTemp = @{ 'T01' = 905.0; 'T02' = 892.0; 'T03' = 870.0; 'T04' = 855.0 }
-    $rowOff   = @{ '001' = 0.0; '002' = -5.0; '003' = 8.0 }
+    $baseTemp = @{ 'T01' = 890.0; 'T02' = 885.0; 'T03' = 870.0; 'T04' = 860.0 }
+    $rowOff   = @{ '001' = 0.0; '002' = -5.0; '003' = 6.0 }
     $baseTs   = 1000
     $rng      = [System.Random]::new(42)
-    $count    = 0
+    $readings = @()
 
-    # Login first to get a JWT (ingest endpoint may be admin-only in future)
     $loginBody = '{"username":"admin","password":"admin123"}'
     $token = $null
     try {
-        $loginResp = Invoke-WebRequest -Uri "http://localhost:$BackendPort/api/v1/auth/login" `
+        $loginResp = Invoke-WebRequest -Uri "http://127.0.0.1:$BackendPort/api/v1/auth/login" `
             -Method Post -Body $loginBody -ContentType 'application/json' `
             -UseBasicParsing -TimeoutSec 5
         $token = ($loginResp.Content | ConvertFrom-Json).access_token
@@ -352,28 +403,33 @@ if (-not $NoSeed) {
             $rowKey = $parts[0]; $colKey = $parts[1]
             $base = $baseTemp[$rowKey]
             $off  = $rowOff[$colKey]
-            $wave = 12 * [Math]::Sin(($minute + [int]$colKey) * 0.15)
-            $noise = $rng.NextDouble() * 6 - 3
+            $wave = 4 * [Math]::Sin(($minute + [int]$colKey) * 0.15)
+            $noise = $rng.NextDouble() * 2 - 1
             $temp = $base + $off + $wave + $noise
+            # Stay more than 30 °C above the furnace mean so hotspots are real.
             if ($tid -eq 'T01-003' -or $tid -eq 'T02-003') {
-                $temp += 25 + ($rng.NextDouble() * 4 - 2)
+                $temp = 945 + ($rng.NextDouble() * 6 - 3)
             }
-            $body = @{
-                tube_id    = $tid
-                ts_minute  = $baseTs + $minute
+            $readings += @{
+                tube_id     = $tid
+                ts_minute   = $baseTs + $minute
                 wall_temp_c = [Math]::Round($temp, 1)
-            } | ConvertTo-Json -Compress
-            $headers = @{ 'Content-Type' = 'application/json' }
-            if ($token) { $headers['Authorization'] = "Bearer $token" }
-            try {
-                Invoke-WebRequest -Uri "http://localhost:$BackendPort/api/v1/ingest/temperature" `
-                    -Method Post -Body $body -Headers $headers `
-                    -UseBasicParsing -TimeoutSec 5 | Out-Null
-                $count++
-            } catch { }
+                source      = 'seed'
+            }
         }
     }
-    Write-OK "Ingested $count temperature readings"
+    $body = @{ readings = $readings } | ConvertTo-Json -Compress -Depth 4
+    $headers = @{ 'Content-Type' = 'application/json' }
+    if ($token) { $headers['Authorization'] = "Bearer $token" }
+    try {
+        $ing = Invoke-WebRequest -Uri "http://127.0.0.1:$BackendPort/api/v1/ingest/temperature/batch" `
+            -Method Post -Body $body -Headers $headers `
+            -UseBasicParsing -TimeoutSec 60
+        $n = ($ing.Content | ConvertFrom-Json).n
+        Write-OK "Ingested $n temperature readings"
+    } catch {
+        Write-Warn "Temperature batch failed: $($_.Exception.Message)"
+    }
 
     # ── Burner status directly into SQLite (no public ingest endpoint) ──
     Write-Host "  → Burners: 8 burners × 30 minutes = 240 readings (direct DB)"
@@ -397,7 +453,7 @@ if (-not $NoSeed) {
     $headers = @{ 'Content-Type' = 'application/json' }
     if ($token) { $headers['Authorization'] = "Bearer $token" }
     try {
-        $optResp = Invoke-WebRequest -Uri "http://localhost:$BackendPort/api/v1/optimization" `
+        $optResp = Invoke-WebRequest -Uri "http://127.0.0.1:$BackendPort/api/v1/optimization" `
             -Method Post -Body $optBody -Headers $headers `
             -UseBasicParsing -TimeoutSec 10
         $opt = $optResp.Content | ConvertFrom-Json
@@ -412,8 +468,8 @@ if (-not $NoSeed) {
 # ─────────────────────────────────────────────────────────────────────────────
 Write-Step "Final verification"
 try {
-    $h = (Invoke-WebRequest "http://localhost:$BackendPort/api/v1/health" -UseBasicParsing).Content | ConvertFrom-Json
-    $t = (Invoke-WebRequest "http://localhost:$BackendPort/api/v1/temperature-map" -UseBasicParsing).Content | ConvertFrom-Json
+    $h = (Invoke-WebRequest "http://127.0.0.1:$BackendPort/api/v1/health" -UseBasicParsing).Content | ConvertFrom-Json
+    $t = (Invoke-WebRequest "http://127.0.0.1:$BackendPort/api/v1/temperature-map" -UseBasicParsing).Content | ConvertFrom-Json
     Write-OK "Health: n_tubes=$($h.n_tubes), open_alerts=$($h.open_alerts)"
     Write-OK "Temp map: mean=$($t.mean_wall_temp_c)°C, hotspots=$($t.hotspots.Count)"
 } catch {
@@ -445,31 +501,8 @@ Write-Host " 💚 Health:    http://localhost:$BackendPort/api/v1/health" -Foreg
 Write-Host " ---------------------------------------------------"
 Write-Host " 🔑 Admin login:  admin / admin123" -ForegroundColor Yellow
 Write-Host " 🛑 Stop:          .\scripts\stop-dashboard.ps1"
-Write-Host "                (or close this window / kill jobs: Get-Job | Stop-Job | Remove-Job)"
+Write-Host " 📄 Logs:          $LogDir"
 Write-Host "=====================================================" -ForegroundColor White
 Write-Host ""
-Write-Host "Background jobs running in this session:"
-Get-Job -Name 'mrto-*' | Format-Table Name, Id, State -AutoSize
-Write-Host ""
-Write-Host "To view backend logs:    Receive-Job -Name mrto-backend -Keep"
-Write-Host "To view dashboard logs:   Receive-Job -Name mrto-dashboard -Keep"
-Write-Host ""
-Write-Host "Press Ctrl+C to stop both servers."
-
-# Keep the script alive so the jobs keep running (user can Ctrl+C to exit)
-try {
-    while ($true) {
-        Start-Sleep -Seconds 30
-        # Heartbeat
-        $alive = Get-Job -Name 'mrto-backend' -ErrorAction SilentlyContinue
-        if (-not $alive -or $alive.State -ne 'Running') {
-            Write-Warn "Backend job stopped. Exiting."
-            break
-        }
-    }
-} finally {
-    Write-Host "`nStopping background jobs..."
-    Get-Job -Name 'mrto-*' -ErrorAction SilentlyContinue | Stop-Job -ErrorAction SilentlyContinue
-    Get-Job -Name 'mrto-*' -ErrorAction SilentlyContinue | Remove-Job -ErrorAction SilentlyContinue
-    Write-OK "Jobs stopped. Goodbye."
-}
+Write-Host "Servers keep running after this script exits."
+Write-Host "A live simulator appends a new furnace sample every 5 seconds."

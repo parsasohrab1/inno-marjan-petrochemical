@@ -422,3 +422,47 @@ def test_register_and_list_model_version(client, tmp_path):
     assert r2.status_code == 200
     assert r2.json()["sha256"].startswith("a" * 12)
     assert r2.json()["metrics"]["mae_hours"] == 5000
+
+
+def test_temperature_batch_dedups_hotspot_alerts(client):
+    h = _auth_headers(_manager_token(client))
+    readings = []
+    for minute in range(3):
+        readings.append({"tube_id": "T01-001", "ts_minute": minute, "wall_temp_c": 860.0})
+        readings.append({"tube_id": "T01-002", "ts_minute": minute, "wall_temp_c": 862.0})
+        readings.append({"tube_id": "T01-003", "ts_minute": minute, "wall_temp_c": 950.0})
+    r = client.post("/api/v1/ingest/temperature/batch", json={"readings": readings}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["n"] == 9
+    alerts = client.get("/api/v1/alerts").json()["alerts"]
+    hot = [a for a in alerts if a["tube_id"] == "T01-003" and a["status"] == "open"]
+    assert len(hot) == 1
+
+
+def test_burners_keep_latest_row_per_burner(tmp_path):
+    from mrto import db as dbm
+    db_path = str(tmp_path / "burners.sqlite3")
+    app = create_app(db_path=db_path)
+    with dbm.get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO burner_status (burner_id, ts_minute, fuel_flow, intensity, angle) VALUES (?,?,?,?,?)",
+            ("B01-L", 1, 190, 0.95, 0),
+        )
+        conn.execute(
+            "INSERT INTO burner_status (burner_id, ts_minute, fuel_flow, intensity, angle) VALUES (?,?,?,?,?)",
+            ("B01-L", 2, 250, 0.40, 1),
+        )
+    with TestClient(app) as c:
+        body = c.get("/api/v1/burners").json()
+    by_id = {b["burner_id"]: b for b in body["burners"]}
+    assert by_id["B01-L"]["ts_minute"] == 2
+    assert body["n"] == 1
+
+
+def test_temperature_map_reports_latest_timestamp(client):
+    h = _auth_headers(_manager_token(client))
+    client.post("/api/v1/ingest/temperature",
+                json={"tube_id": "T01-001", "ts_minute": 40, "wall_temp_c": 870.0},
+                headers=h)
+    body = client.get("/api/v1/temperature-map").json()
+    assert body["ts_minute"] == 40
