@@ -128,6 +128,34 @@ CREATE TABLE IF NOT EXISTS audit_log (
     action TEXT NOT NULL,
     detail TEXT
 );
+
+-- Phase 2: refresh tokens (rotating, family-based to detect reuse).
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    jti TEXT UNIQUE NOT NULL,            -- the token id (random)
+    family_id TEXT NOT NULL,             -- groups tokens from one login chain
+    username TEXT NOT NULL,
+    role TEXT NOT NULL,
+    issued_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER,                 -- NULL = active, set on revoke/rotation
+    revoked_reason TEXT                 -- 'rotation'|'logout'|'compromise'|'expired'
+);
+CREATE INDEX IF NOT EXISTS idx_rt_family ON refresh_tokens(family_id, revoked_at);
+CREATE INDEX IF NOT EXISTS idx_rt_user ON refresh_tokens(username, revoked_at);
+
+-- Phase 2: model versioning (track trained model metadata).
+CREATE TABLE IF NOT EXISTS model_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module TEXT NOT NULL,                -- 'module1_temperature_map' etc.
+    version TEXT NOT NULL,              -- semantic version, e.g. '1.0.0'
+    file_name TEXT NOT NULL,            -- 'module2_rul.joblib'
+    sha256 TEXT NOT NULL,               -- integrity hash of the .joblib file
+    trained_at INTEGER NOT NULL,
+    metrics_json TEXT,                  -- snapshot of metrics at training time
+    is_active INTEGER NOT NULL DEFAULT 0  -- 1 = currently served by /api/v1/*
+);
+CREATE INDEX IF NOT EXISTS idx_mv_module ON model_versions(module, is_active, trained_at);
 """
 
 
@@ -275,3 +303,142 @@ def audit(conn, username: str, action: str, detail: str = "") -> None:
         "INSERT INTO audit_log (ts_epoch, username, action, detail) VALUES (?,?,?,?)",
         (int(time.time()), username, action, detail)
     )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Refresh tokens (Phase 2)
+# ────────────────────────────────────────────────────────────────────
+REFRESH_TTL = int(os.environ.get("MRTO_REFRESH_TTL", 30 * 24 * 3600))  # 30 days
+
+
+def issue_refresh_token(conn, username: str, role: str) -> dict:
+    """Create a new refresh token row. Returns the token payload (no signature)."""
+    jti = _secrets.token_hex(16)
+    family_id = _secrets.token_hex(16)
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO refresh_tokens (jti, family_id, username, role, "
+        "issued_at, expires_at, revoked_at, revoked_reason) "
+        "VALUES (?,?,?,?,?,?,NULL,NULL)",
+        (jti, family_id, username, role, now, now + REFRESH_TTL)
+    )
+    return {"jti": jti, "family_id": family_id, "username": username,
+            "role": role, "issued_at": now, "expires_at": now + REFRESH_TTL}
+
+
+def verify_refresh_token(conn, jti: str) -> dict | None:
+    """Look up a refresh token by jti. Returns None if missing/expired/revoked."""
+    row = conn.execute(
+        "SELECT * FROM refresh_tokens WHERE jti=?", (jti,)
+    ).fetchone()
+    if row is None:
+        return None
+    if row["revoked_at"] is not None:
+        # Reuse detection: caller should revoke the whole family.
+        return {"_revoked": True, "family_id": row["family_id"]}
+    if row["expires_at"] < int(time.time()):
+        conn.execute(
+            "UPDATE refresh_tokens SET revoked_at=?, revoked_reason='expired' WHERE id=?",
+            (int(time.time()), row["id"])
+        )
+        return None
+    return dict(row)
+
+
+def rotate_refresh_token(conn, jti: str) -> tuple[dict | None, dict | None]:
+    """Revoke the old token (by jti) and issue a new one in the same family.
+
+    Returns (new_token_payload, error_or_None). If the old token was already
+    revoked (reuse detected), the entire family is revoked and we return
+    (None, {"error": "reuse_detected"}) so the caller can force re-login.
+    """
+    row = conn.execute(
+        "SELECT * FROM refresh_tokens WHERE jti=?", (jti,)
+    ).fetchone()
+    if row is None:
+        return None, {"error": "invalid_token"}
+    if row["revoked_at"] is not None:
+        # REUSE DETECTED — token rotation on an already-rotated token means
+        # an attacker has replayed it. Revoke the entire family immediately.
+        conn.execute(
+            "UPDATE refresh_tokens SET revoked_at=?, revoked_reason='compromise' "
+            "WHERE family_id=? AND revoked_at IS NULL",
+            (int(time.time()), row["family_id"])
+        )
+        audit(conn, row["username"], "refresh_token_reuse",
+              f"family={row['family_id']} revoked due to reuse")
+        return None, {"error": "reuse_detected"}
+    if row["expires_at"] < int(time.time()):
+        return None, {"error": "expired"}
+    # Revoke the old token.
+    conn.execute(
+        "UPDATE refresh_tokens SET revoked_at=?, revoked_reason='rotation' WHERE id=?",
+        (int(time.time()), row["id"])
+    )
+    # Issue a new token in the same family.
+    new_jti = _secrets.token_hex(16)
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO refresh_tokens (jti, family_id, username, role, "
+        "issued_at, expires_at, revoked_at, revoked_reason) "
+        "VALUES (?,?,?,?,?,?,NULL,NULL)",
+        (new_jti, row["family_id"], row["username"], row["role"], now, now + REFRESH_TTL)
+    )
+    return {"jti": new_jti, "family_id": row["family_id"], "username": row["username"],
+            "role": row["role"], "issued_at": now, "expires_at": now + REFRESH_TTL}, None
+
+
+def revoke_family(conn, family_id: str, reason: str = "logout") -> int:
+    """Revoke all active tokens in a family (used on logout). Returns count."""
+    cur = conn.execute(
+        "UPDATE refresh_tokens SET revoked_at=?, revoked_reason=? "
+        "WHERE family_id=? AND revoked_at IS NULL",
+        (int(time.time()), reason, family_id)
+    )
+    return cur.rowcount
+
+
+# ────────────────────────────────────────────────────────────────────
+# Model versioning (Phase 2)
+# ────────────────────────────────────────────────────────────────────
+def register_model_version(conn, module: str, version: str, file_name: str,
+                            sha256: str, metrics_json: str | None = None,
+                            make_active: bool = True) -> int:
+    """Insert a model version row and (optionally) mark it active."""
+    now = int(time.time())
+    cur = conn.execute(
+        "INSERT INTO model_versions (module, version, file_name, sha256, "
+        "trained_at, metrics_json, is_active) VALUES (?,?,?,?,?,?,0)",
+        (module, version, file_name, sha256, now, metrics_json)
+    )
+    vid = cur.lastrowid
+    if make_active:
+        conn.execute(
+            "UPDATE model_versions SET is_active=0 WHERE module=?", (module,)
+        )
+        conn.execute(
+            "UPDATE model_versions SET is_active=1 WHERE id=?", (vid,)
+        )
+    return vid
+
+
+def get_active_model_version(conn, module: str) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM model_versions WHERE module=? AND is_active=1 "
+        "ORDER BY trained_at DESC LIMIT 1",
+        (module,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_model_versions(conn, module: str | None = None) -> list[dict]:
+    if module:
+        rows = conn.execute(
+            "SELECT * FROM model_versions WHERE module=? ORDER BY trained_at DESC",
+            (module,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM model_versions ORDER BY trained_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]

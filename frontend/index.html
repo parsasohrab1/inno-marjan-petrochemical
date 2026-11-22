@@ -140,6 +140,42 @@
   .tab-content { display: none; }
   .tab-content.active { display: block; }
 
+  /* ── Login overlay (Phase 2: UI auth) ── */
+  .login-overlay {
+    position: fixed; inset: 0; background: rgba(11, 28, 44, 0.92);
+    display: flex; align-items: center; justify-content: center; z-index: 1000;
+    backdrop-filter: blur(4px);
+  }
+  .login-overlay.hidden { display: none; }
+  .login-card {
+    background: var(--panel); border: 1px solid var(--accent-2);
+    border-radius: 14px; padding: clamp(20px, 4vw, 36px);
+    width: min(90vw, 380px); box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+  .login-card h2 { color: var(--accent); margin: 0 0 6px; font-size: 1.3rem; text-align: center; }
+  .login-card .sub { color: var(--text-soft); font-size: 0.82rem; text-align: center; margin-bottom: 20px; }
+  .login-card .field { margin-bottom: 14px; }
+  .login-card label { display: block; color: var(--text-soft); font-size: 0.8rem; margin-bottom: 5px; }
+  .login-card input {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--accent-2);
+    color: var(--text); padding: 10px 12px; border-radius: 8px; font-size: 0.95rem;
+    box-sizing: border-box;
+  }
+  .login-card input:focus { outline: none; border-color: var(--accent); }
+  .login-card .btn { width: 100%; margin-top: 6px; }
+  .login-card .err { color: var(--danger); font-size: 0.82rem; min-height: 1.1em;
+    text-align: center; margin-top: 10px; }
+  .login-card .hint { color: var(--text-soft); font-size: 0.74rem; text-align: center;
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--accent-2); }
+
+  /* User badge in topbar */
+  .user-badge { display: flex; align-items: center; gap: 8px; }
+  .user-badge .avatar { width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent-2); display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 0.85rem; }
+  .user-badge .name { font-size: 0.85rem; color: var(--text); }
+  .user-badge .role { font-size: 0.72rem; color: var(--text-soft); }
+
   footer { text-align: center; color: var(--text-soft); padding: 24px;
     font-size: 0.78rem; border-top: 1px solid var(--accent-2); margin-top: 30px; }
 
@@ -162,8 +198,33 @@
   <div class="right">
     <span class="pill" id="pill-time">—</span>
     <span class="pill live" id="pill-status">در حال اتصال ...</span>
+    <span class="user-badge" id="user-badge" style="display:none;">
+      <span class="avatar" id="user-avatar">A</span>
+      <span class="name" id="user-name">admin</span>
+      <span class="role" id="user-role">manager</span>
+      <button class="btn small" id="btn-logout">خروج</button>
+    </span>
   </div>
 </header>
+
+<!-- Login overlay (Phase 2: UI auth) -->
+<div class="login-overlay" id="login-overlay">
+  <form class="login-card" id="login-form">
+    <h2>ورود به سامانه MRTO</h2>
+    <div class="sub">پتروشیمی مرجان — سامانه پایش هوشمند ریفورمر</div>
+    <div class="field">
+      <label for="login-user">نام کاربری</label>
+      <input type="text" id="login-user" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label for="login-pass">رمز عبور</label>
+      <input type="password" id="login-pass" autocomplete="current-password" required>
+    </div>
+    <button type="submit" class="btn">ورود</button>
+    <div class="err" id="login-err"></div>
+    <div class="hint">دسترسی فقط برای کاربران مجاز (manager/operator/it)</div>
+  </form>
+</div>
 
 <div class="container">
   <div class="tabs">
@@ -338,19 +399,139 @@ $$('.tab').forEach(t => t.addEventListener('click', () => {
 }));
 
 // ── Helpers ──
+// Phase 2: token storage in sessionStorage (tab-bounded, not persisted to disk).
+// Access token TTL is short (8h default), so we refresh transparently on 401.
+const AUTH = {
+  get access() { return sessionStorage.getItem('mrto_access'); },
+  get refresh() { return sessionStorage.getItem('mrto_refresh'); },
+  get role() { return sessionStorage.getItem('mrto_role'); },
+  get user() { return sessionStorage.getItem('mrto_user'); },
+  set(b) {
+    sessionStorage.setItem('mrto_access', b.access_token || '');
+    sessionStorage.setItem('mrto_refresh', b.refresh_token || '');
+    sessionStorage.setItem('mrto_role', b.role || '');
+    sessionStorage.setItem('mrto_user', b.access_token ? decodeUser(b.access_token) : '');
+  },
+  clear() {
+    ['mrto_access','mrto_refresh','mrto_role','mrto_user'].forEach(k => sessionStorage.removeItem(k));
+  },
+};
+
+// Decode the JWT `sub` (username) without verifying — display only.
+function decodeUser(jwt) {
+  try {
+    const p = jwt.split('.')[1];
+    return JSON.parse(atob(p + '='.repeat((4 - p.length % 4) % 4))).sub || '';
+  } catch { return ''; }
+}
+
+let _refreshing = null;  // in-flight refresh promise (dedupes concurrent 401s)
+
+async function _doRefresh() {
+  if (!AUTH.refresh) { AUTH.clear(); showLogin(); throw new Error('no refresh token'); }
+  const res = await fetch(API + '/api/v1/auth/refresh', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: AUTH.refresh }),
+  });
+  if (res.status === 401) {
+    // Refresh rejected (expired / reuse detected) → force re-login.
+    AUTH.clear(); showLogin(); throw new Error('session expired');
+  }
+  if (!res.ok) throw new Error(`refresh HTTP ${res.status}`);
+  const b = await res.json();
+  AUTH.set(b);
+  updateBadge();
+  return AUTH.access;
+}
+
+async function apiFetch(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (AUTH.access) headers['Authorization'] = `Bearer ${AUTH.access}`;
+  if (opts.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  let res = await fetch(API + path, Object.assign({}, opts, { headers }));
+  if (res.status === 401 && AUTH.refresh) {
+    // 401 → refresh once, then retry the original request.
+    _refreshing = _refreshing || _doRefresh();
+    try { await _refreshing; } finally { _refreshing = null; }
+    headers['Authorization'] = `Bearer ${AUTH.access}`;
+    res = await fetch(API + path, Object.assign({}, opts, { headers }));
+  }
+  return res;
+}
+
 async function getJSON(path) {
-  const res = await fetch(API + path);
+  const res = await apiFetch(path);
   if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`);
   return await res.json();
 }
 async function postJSON(path, body) {
-  const res = await fetch(API + path, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+  const res = await apiFetch(path, {
+    method: 'POST', body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`);
   return await res.json();
 }
+
+// ── Login UI ──
+function showLogin() {
+  $('#login-overlay').classList.remove('hidden');
+  $('#user-badge').style.display = 'none';
+  $('#login-user').focus();
+}
+function hideLogin() {
+  $('#login-overlay').classList.add('hidden');
+  updateBadge();
+  // Reload all data after a successful login.
+  loadOverview(); loadRUL(); loadBurners(); loadAlerts(); loadMetrics();
+}
+function updateBadge() {
+  if (!AUTH.access) { $('#user-badge').style.display = 'none'; return; }
+  $('#user-badge').style.display = 'flex';
+  $('#user-name').textContent = AUTH.user || 'user';
+  $('#user-role').textContent = AUTH.role || '';
+  $('#user-avatar').textContent = (AUTH.user || '?')[0].toUpperCase();
+}
+
+$('#login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const u = $('#login-user').value.trim();
+  const p = $('#login-pass').value;
+  const errBox = $('#login-err');
+  errBox.textContent = '';
+  try {
+    const res = await fetch(API + '/api/v1/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p }),
+    });
+    if (res.status === 429) { errBox.textContent = 'تعداد تلاش‌ها بیش از حد — کمی صبر کنید'; return; }
+    if (!res.ok) { errBox.textContent = 'نام کاربری یا رمز اشتباه است'; return; }
+    const b = await res.json();
+    AUTH.set(b);
+    $('#login-pass').value = '';
+    hideLogin();
+  } catch (err) {
+    errBox.textContent = 'خطا در ارتباط با سرور';
+  }
+});
+
+$('#btn-logout').addEventListener('click', async () => {
+  try {
+    if (AUTH.refresh) {
+      await fetch(API + '/api/v1/auth/logout', {
+        method: 'POST', headers: {
+          'Authorization': `Bearer ${AUTH.access}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ refresh_token: AUTH.refresh }),
+      });
+    }
+  } catch { /* best-effort */ }
+  AUTH.clear();
+  showLogin();
+});
+
+// On page load: if we have a token, hide login; else show it.
+if (AUTH.access) { hideLogin(); } else { showLogin(); }
 
 function tempClass(t) {
   if (t >= 930) return 'hot';
@@ -596,12 +777,23 @@ async function loadMetrics() {
 }
 
 // ── Init ──
-loadOverview();
-loadRUL();
-loadBurners();
-loadAlerts();
-loadMetrics();
-setInterval(loadOverview, 30000);
+// Only auto-load data if we already have a token; otherwise the login
+// overlay is shown and data loads after a successful login (see hideLogin()).
+// In dev mode (MRTO_ALLOW_ANON=1) the backend serves anonymous viewers, so
+// these calls succeed and the dashboard renders immediately.
+if (AUTH.access) {
+  loadOverview();
+  loadRUL();
+  loadBurners();
+  loadAlerts();
+  loadMetrics();
+  setInterval(loadOverview, 30000);
+} else {
+  // Try once anyway — anonymous read may be allowed in dev; if it 401s,
+  // the login overlay stays up (already shown) and the user logs in.
+  Promise.allSettled([loadOverview(), loadRUL(), loadBurners(), loadAlerts(), loadMetrics()]);
+  setInterval(() => { if (AUTH.access) loadOverview(); }, 30000);
+}
 </script>
 </body>
 </html>

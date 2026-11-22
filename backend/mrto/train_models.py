@@ -25,10 +25,46 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mrto import synthetic_data as sd
 from mrto import real_data as rd
+from mrto import db as dbm
 from mrto.models import (
     TemperatureMapModel, RULModel, OptimizationModel, BurnerCatalystModel,
     save_model, save_metrics,
 )
+
+
+def _register_version(module: str, file_name: str, models_dir: str,
+                       metrics_path: str) -> None:
+    """Register a trained model in the model_versions table for traceability.
+
+    Computes a sha256 of the .joblib file so the served binary can be
+    verified against the audit trail, and snapshots the metrics JSON so
+    the version record is self-contained even if the metrics file is
+    later overwritten by a retrain.
+    """
+    import hashlib
+    joblib_path = os.path.join(models_dir, file_name)
+    sha = hashlib.sha256(open(joblib_path, "rb").read()).hexdigest()
+    metrics_json = None
+    if os.path.exists(metrics_path):
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                metrics_json = f.read()
+        except Exception:
+            pass
+    # Derive a semantic version from the trained_at timestamp (UTC).
+    from datetime import datetime, timezone
+    version = datetime.now(timezone.utc).strftime("%Y%m%d.%H%M%S")
+    db_path = os.environ.get("MRTO_DB_PATH", dbm.DEFAULT_DB_PATH)
+    try:
+        dbm.init_db(db_path)
+        with dbm.get_conn(db_path) as conn:
+            dbm.register_model_version(
+                conn, module=module, version=version, file_name=file_name,
+                sha256=sha, metrics_json=metrics_json, make_active=True,
+            )
+        print(f"  registered {module} v{version} sha256={sha[:12]}… as active")
+    except Exception as e:
+        print(f"  ! model version registration failed ({module}): {e}")
 
 
 def _mix_into_sc(synthetic_sc: pd.DataFrame, real_ccpp: pd.DataFrame | None) -> pd.DataFrame:
@@ -141,6 +177,8 @@ def main(out_dir: str = "/home/z/my-project/download/mrto/data",
     save_model(m1, os.path.join(models_dir, "module1_temp_map.joblib"))
     save_metrics(m1_metrics, os.path.join(models_dir, "module1_metrics.json"))
     print(f"  RMSE = {m1_metrics.rmse:.2f} °C, MAE = {m1_metrics.mae:.2f}, R² = {m1_metrics.r2:.3f}")
+    _register_version("module1_temperature_map", "module1_temp_map.joblib",
+                       models_dir, os.path.join(models_dir, "module1_metrics.json"))
 
     # 4. Train Module 2: RUL
     print("\n[4/5] Training Module 2: RUL regression + failure classifier ...")
@@ -150,6 +188,8 @@ def main(out_dir: str = "/home/z/my-project/download/mrto/data",
     save_metrics(m2_metrics, os.path.join(models_dir, "module2_metrics.json"))
     print(f"  MAE = {m2_metrics.mae_hours:.0f} h, RMSE = {m2_metrics.rmse_hours:.0f} h, R² = {m2_metrics.r2:.3f}")
     print(f"  AUC(90d) = {m2_metrics.auc_90d:.3f}, Accuracy = {m2_metrics.accuracy_90d:.3f}")
+    _register_version("module2_rul", "module2_rul.joblib",
+                       models_dir, os.path.join(models_dir, "module2_metrics.json"))
 
     # 5. Train Module 3: optimization (with real data mixed in)
     print("\n[5/5] Training Module 3: S/C optimization + Module 4: burner/catalyst ...")
@@ -160,6 +200,8 @@ def main(out_dir: str = "/home/z/my-project/download/mrto/data",
     save_metrics(m3_metrics, os.path.join(models_dir, "module3_metrics.json"))
     print(f"  efficiency MAE = {m3_metrics.eff_mae:.4f}, RMSE = {m3_metrics.eff_rmse:.4f}, R² = {m3_metrics.eff_r2:.3f}")
     print(f"  training rows: {len(sc_df)} synthetic + {len(real_ccpp) if real_ccpp is not None else 0} real = {len(sc_df_mixed)} mixed")
+    _register_version("module3_optimization", "module3_optimization.joblib",
+                       models_dir, os.path.join(models_dir, "module3_metrics.json"))
 
     burner_df_mixed = _mix_into_burner(burner_df, real_airfoil)
     m4 = BurnerCatalystModel()
@@ -168,6 +210,8 @@ def main(out_dir: str = "/home/z/my-project/download/mrto/data",
     save_metrics(m4_metrics, os.path.join(models_dir, "module4_metrics.json"))
     print(f"  burner AUC = {m4_metrics.auc:.3f}, accuracy = {m4_metrics.accuracy:.3f}")
     print(f"  catalyst activity MAE = {m4_metrics.activity_mae:.4f}, R² = {m4_metrics.activity_r2:.3f}")
+    _register_version("module4_burner_catalyst", "module4_burner_catalyst.joblib",
+                       models_dir, os.path.join(models_dir, "module4_metrics.json"))
 
     # Save report
     report = {

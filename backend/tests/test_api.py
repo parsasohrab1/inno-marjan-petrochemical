@@ -17,10 +17,17 @@ def client(tmp_path):
 
 
 def _manager_token(client) -> str:
-    """Log in as the seeded admin (manager role) and return a Bearer token."""
+    """Log in as the seeded admin (manager role) and return a Bearer access token."""
     r = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
+
+
+def _login_full(client) -> dict:
+    """Log in and return the full token bundle (access + refresh)."""
+    r = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+    assert r.status_code == 200, r.text
+    return r.json()
 
 
 def _auth_headers(token: str) -> dict:
@@ -50,8 +57,10 @@ def test_login_success(client):
     assert r.status_code == 200
     body = r.json()
     assert "access_token" in body
+    assert "refresh_token" in body          # Phase 2: refresh token issued
     assert body["token_type"] == "Bearer"
     assert body["role"] == "manager"
+    assert body["expires_in"] > 0           # Phase 2: TTL exposed for UI
 
 
 def test_login_failure(client):
@@ -270,3 +279,146 @@ def test_protected_endpoint_rejects_bad_token(client):
     """A malformed (non-JWT) bearer string must be rejected."""
     r = client.get("/api/v1/tubes", headers={"Authorization": "Bearer not-a-jwt"})
     assert r.status_code == 401
+
+
+# ── Phase 2: refresh token + rotation tests ────────────────────────
+def test_refresh_token_rotation(client):
+    """A refresh token can be exchanged for a new access+refresh pair,
+    and the OLD refresh token is then invalid (single-use rotation)."""
+    bundle = _login_full(client)
+    old_refresh = bundle["refresh_token"]
+    # Refresh once → new tokens.
+    r = client.post("/api/v1/auth/refresh", json={"refresh_token": old_refresh})
+    assert r.status_code == 200, r.text
+    new = r.json()
+    assert new["access_token"] != bundle["access_token"]
+    assert new["refresh_token"] != old_refresh
+    # Old refresh token is now dead (reuse → family revoked).
+    r2 = client.post("/api/v1/auth/refresh", json={"refresh_token": old_refresh})
+    assert r2.status_code == 401
+    assert "reuse" in r2.json()["detail"].lower()
+
+
+def test_refresh_token_reuse_revokes_family(client):
+    """If an attacker replays a rotated refresh token, the whole family
+    is revoked — so the legitimate client's NEW refresh also dies."""
+    bundle = _login_full(client)
+    old_refresh = bundle["refresh_token"]
+    # Attacker uses the old (still-valid) token first → gets new tokens.
+    r = client.post("/api/v1/auth/refresh", json={"refresh_token": old_refresh})
+    legit_new = r.json()["refresh_token"]
+    # Victim (legitimate client) now tries the same old token → reuse detected,
+    # family revoked.
+    r2 = client.post("/api/v1/auth/refresh", json={"refresh_token": old_refresh})
+    assert r2.status_code == 401
+    # The legitimately-rotated token is now ALSO dead (family revoked).
+    r3 = client.post("/api/v1/auth/refresh", json={"refresh_token": legit_new})
+    assert r3.status_code == 401
+
+
+def test_refresh_rejects_access_token(client):
+    """An access token presented as a refresh token must be rejected."""
+    bundle = _login_full(client)
+    access = bundle["access_token"]
+    r = client.post("/api/v1/auth/refresh", json={"refresh_token": access})
+    assert r.status_code == 401
+
+
+def test_access_rejects_refresh_token(client):
+    """A refresh token presented as a Bearer access token must be rejected."""
+    bundle = _login_full(client)
+    r = client.get("/api/v1/tubes",
+                    headers={"Authorization": f"Bearer {bundle['refresh_token']}"})
+    assert r.status_code == 401
+
+
+def test_logout_revokes_refresh_family(client):
+    """Logout revokes the refresh family so subsequent refresh fails."""
+    bundle = _login_full(client)
+    access = bundle["access_token"]
+    refresh = bundle["refresh_token"]
+    r = client.post("/api/v1/auth/logout", json={"refresh_token": refresh},
+                     headers=_auth_headers(access))
+    assert r.status_code == 200
+    assert r.json()["revoked"] >= 1
+    # Refresh now fails (token revoked).
+    r2 = client.post("/api/v1/auth/refresh", json={"refresh_token": refresh})
+    assert r2.status_code == 401
+
+
+def test_refresh_invalid_token(client):
+    """A garbage refresh token is rejected with 401."""
+    r = client.post("/api/v1/auth/refresh", json={"refresh_token": "garbage.payload.sig"})
+    assert r.status_code == 401
+
+
+# ── Phase 2: rate limiting tests ───────────────────────────────────
+def test_login_rate_limit(client):
+    """More than 10 failed logins/minute from the same IP → 429."""
+    for _ in range(10):
+        client.post("/api/v1/auth/login",
+                    json={"username": "admin", "password": "wrong"})
+    r = client.post("/api/v1/auth/login",
+                    json={"username": "admin", "password": "wrong"})
+    assert r.status_code == 429
+    assert "Retry-After" in r.headers or "retry_after_s" in r.json()
+
+
+def test_rate_limit_headers_present(client):
+    """Successful requests carry X-RateLimit-* headers."""
+    r = client.get("/api/v1/health")
+    # /health is exempt from the limiter, so test a real endpoint.
+    r = client.get("/api/v1/tubes")
+    assert "X-RateLimit-Limit" in r.headers
+    assert "X-RateLimit-Remaining" in r.headers
+
+
+# ── Phase 2: model versioning tests ────────────────────────────────
+def test_model_versions_empty_by_default(client):
+    """Before any training, the versions endpoint returns an empty list
+    but requires auth (manager role)."""
+    tok = _manager_token(client)
+    r = client.get("/api/v1/models/versions", headers=_auth_headers(tok))
+    assert r.status_code == 200
+    assert r.json()["n"] == 0
+
+
+def test_model_versions_rejects_viewer(client):
+    """Anonymous viewers cannot read the model-version audit trail."""
+    r = client.get("/api/v1/models/versions")
+    # Anonymous → viewer role → 403 (manager-only endpoint).
+    assert r.status_code == 403
+
+
+def test_active_model_404_when_untrained(client):
+    """Asking for an active model that was never registered → 404."""
+    r = client.get("/api/v1/models/module2_rul/active")
+    assert r.status_code == 404
+
+
+def test_register_and_list_model_version(client, tmp_path):
+    """Register a model version directly via the db layer and verify the
+    endpoint returns it with sha256 + metrics snapshot."""
+    from mrto import db as dbm
+    db_path = str(tmp_path / "test.sqlite3")
+    dbm.init_db(db_path)
+    with dbm.get_conn(db_path) as conn:
+        dbm.register_model_version(
+            conn, module="module2_rul", version="20260101.120000",
+            file_name="module2_rul.joblib", sha256="a" * 64,
+            metrics_json='{"mae_hours": 5000}', make_active=True,
+        )
+    tok = _manager_token(client)
+    r = client.get("/api/v1/models/versions?module=module2_rul",
+                    headers=_auth_headers(tok))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["n"] == 1
+    v = body["versions"][0]
+    assert v["module"] == "module2_rul"
+    assert v["version"] == "20260101.120000"
+    assert v["is_active"] == 1
+    r2 = client.get("/api/v1/models/module2_rul/active")
+    assert r2.status_code == 200
+    assert r2.json()["sha256"].startswith("a" * 12)
+    assert r2.json()["metrics"]["mae_hours"] == 5000

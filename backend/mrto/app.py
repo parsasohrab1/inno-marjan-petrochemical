@@ -3,6 +3,8 @@
 Endpoints (see SRS Appendix 8-1):
     GET  /api/v1/health
     POST /api/v1/auth/login
+    POST /api/v1/auth/refresh
+    POST /api/v1/auth/logout
     GET  /api/v1/tubes
     GET  /api/v1/temperature-map
     GET  /api/v1/rul
@@ -12,6 +14,8 @@ Endpoints (see SRS Appendix 8-1):
     POST /api/v1/alerts/{id}/ack
     GET  /api/v1/reports/daily
     GET  /api/v1/metrics  (model quality metrics)
+    GET  /api/v1/models/versions            (model versioning)
+    GET  /api/v1/models/{module}/active
     POST /api/v1/ingest/temperature  (admin ingestion)
 """
 from __future__ import annotations
@@ -39,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mrto import db as dbm
 from mrto import models as mlm
+from mrto.ratelimit import RateLimiter
 
 MODELS_DIR = os.environ.get("MRTO_MODELS_DIR",
                               "/home/z/my-project/download/mrto/models")
@@ -86,8 +91,16 @@ def _avg_wall_temp_per_tube(conn, tube_ids: list[str]) -> dict[str, float]:
 # Pydantic models
 # ────────────────────────────────────────────────────────────────────
 class LoginReq(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class RefreshReq(BaseModel):
+    refresh_token: str = Field(min_length=10, max_length=2048)
+
+
+class LogoutReq(BaseModel):
+    refresh_token: str = Field(min_length=10, max_length=2048)
 
 
 class OptimizationReq(BaseModel):
@@ -133,6 +146,7 @@ if len(JWT_SECRET) < 32 and not os.environ.get("MRTO_ALLOW_INSECURE_JWT"):
     )
 
 JWT_TTL = int(os.environ.get("MRTO_JWT_TTL", 8 * 3600))
+REFRESH_TTL = int(os.environ.get("MRTO_REFRESH_TTL", 30 * 24 * 3600))
 ALLOW_ANON = os.environ.get("MRTO_ALLOW_ANON", "1") == "1"
 
 _bearer = HTTPBearer(auto_error=False)
@@ -147,13 +161,19 @@ def _b64d(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + pad)
 
 
-def make_jwt(username: str, role: str) -> str:
-    import base64, hmac, hashlib
+def make_jwt(username: str, role: str, jti: str | None = None,
+              kind: str = "access") -> str:
+    """Sign a JWT. `kind` is 'access' (short-lived) or 'refresh' (long-lived).
+
+    The refresh token's jti is stored in the DB so it can be revoked /
+    rotated. Access tokens are stateless (no DB lookup per request).
+    """
     header = _b64(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    ttl = JWT_TTL if kind == "access" else REFRESH_TTL
     payload = {
-        "sub": username, "role": role, "iat": int(time.time()),
-        "exp": int(time.time()) + JWT_TTL,
-        "jti": secrets.token_hex(8),
+        "sub": username, "role": role, "kind": kind,
+        "iat": int(time.time()), "exp": int(time.time()) + ttl,
+        "jti": jti or secrets.token_hex(8),
     }
     body = _b64(json.dumps(payload, separators=(",", ":")).encode())
     sig = hmac.new(JWT_SECRET.encode(), f"{header}.{body}".encode(), hashlib.sha256).digest()
@@ -161,9 +181,12 @@ def make_jwt(username: str, role: str) -> str:
     return f"{header}.{body}.{sig_b}"
 
 
-def verify_jwt(token: str) -> dict | None:
-    """Verify HMAC-SHA256 JWT. Rejects alg-confusion by pinning HS256."""
-    import hmac, hashlib
+def verify_jwt(token: str, expected_kind: str | None = None) -> dict | None:
+    """Verify HMAC-SHA256 JWT. Rejects alg-confusion by pinning HS256.
+
+    If `expected_kind` is set, the token's `kind` claim must match (so a
+    refresh token cannot be used as an access token and vice versa).
+    """
     try:
         parts = token.split(".")
         if len(parts) != 3:
@@ -180,23 +203,28 @@ def verify_jwt(token: str) -> dict | None:
         payload = json.loads(_b64d(body_b))
         if payload.get("exp", 0) < time.time():
             return None
+        if expected_kind and payload.get("kind") != expected_kind:
+            return None
         return payload
     except Exception:
         return None
 
 
 async def current_user(creds: HTTPAuthorizationCredentials = Depends(_bearer)) -> dict:
-    """Resolve the authenticated user from the Bearer token.
+    """Resolve the authenticated user from the Bearer access token.
 
     In production (MRTO_ALLOW_ANON != "1"), a missing/invalid token returns
     401. In dev/test mode (default), missing tokens fall back to anonymous
     read-only viewer so the test suite can run without auth.
+
+    Refresh tokens are explicitly rejected here — they may only be used
+    at /api/v1/auth/refresh, never as a bearer credential for data routes.
     """
     if creds is None or not creds.credentials:
         if ALLOW_ANON:
             return {"sub": "anonymous", "role": "viewer"}
         raise HTTPException(status_code=401, detail="Authentication required")
-    payload = verify_jwt(creds.credentials)
+    payload = verify_jwt(creds.credentials, expected_kind="access")
     if payload is None:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return payload
@@ -236,7 +264,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
+    # Rate limiter: protects /auth/login (brute-force) and the API surface.
+    limiter = RateLimiter(
+        default_limit=int(os.environ.get("MRTO_RATE_LIMIT", 100)),
+        default_window=int(os.environ.get("MRTO_RATE_WINDOW", 60)),
+    )
+    app.middleware("http")(limiter.as_middleware())
+
     app.state.db_path = db_path
+    app.state.limiter = limiter
 
     # ── Endpoints ───────────────────────────────────────────────────
     @app.get("/api/v1/health")
@@ -258,10 +294,91 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         with dbm.get_conn(app.state.db_path) as conn:
             user = dbm.verify_user(conn, req.username, req.password)
             if user is None:
+                # Audit failed attempt (rate-limited above; audit gives forensics).
+                dbm.audit(conn, req.username, "login_failed", "")
                 raise HTTPException(status_code=401, detail="Invalid credentials")
-            dbm.audit(conn, user["username"], "login")
-            token = make_jwt(user["username"], user["role"])
-        return {"access_token": token, "token_type": "Bearer", "role": user["role"]}
+            dbm.audit(conn, user["username"], "login", "")
+            # Issue short-lived access + long-lived refresh token (DB-backed
+            # so it can be rotated / revoked).
+            access = make_jwt(user["username"], user["role"], kind="access")
+            refresh_payload = dbm.issue_refresh_token(
+                conn, user["username"], user["role"]
+            )
+            refresh = make_jwt(user["username"], user["role"],
+                                jti=refresh_payload["jti"], kind="refresh")
+        return {
+            "access_token": access,
+            "refresh_token": refresh,
+            "token_type": "Bearer",
+            "role": user["role"],
+            "expires_in": JWT_TTL,
+        }
+
+    @app.post("/api/v1/auth/refresh")
+    def refresh(req: RefreshReq) -> dict:
+        """Exchange a valid refresh token for a new access token + rotated
+        refresh token. Detects reuse: if the presented refresh token has
+        already been rotated, the entire token family is revoked and 401
+        is returned (the client must re-authenticate).
+        """
+        payload = verify_jwt(req.refresh_token, expected_kind="refresh")
+        if payload is None:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        jti = payload.get("jti")
+        if not jti:
+            raise HTTPException(status_code=401, detail="Malformed refresh token")
+        with dbm.get_conn(app.state.db_path) as conn:
+            new_payload, err = dbm.rotate_refresh_token(conn, jti)
+            if err is not None:
+                if err["error"] == "reuse_detected":
+                    # The reuse-detection UPDATE was applied above and will be
+                    # committed by the context manager. We must NOT raise inside
+                    # the `with` block — doing so would rollback the revocation.
+                    # Capture the signal and raise after the block exits cleanly.
+                    pass
+                else:
+                    raise HTTPException(status_code=401,
+                                        detail=f"Refresh failed: {err['error']}")
+            else:
+                dbm.audit(conn, new_payload["username"], "token_refresh", "")
+                access = make_jwt(new_payload["username"], new_payload["role"],
+                                   kind="access")
+                new_refresh = make_jwt(new_payload["username"], new_payload["role"],
+                                        jti=new_payload["jti"], kind="refresh")
+                return {
+                    "access_token": access,
+                    "refresh_token": new_refresh,
+                    "token_type": "Bearer",
+                    "role": new_payload["role"],
+                    "expires_in": JWT_TTL,
+                }
+        # Reuse-detected path: connection has committed the family revocation.
+        raise HTTPException(
+            status_code=401,
+            detail="Refresh token reuse detected — session revoked"
+        )
+
+    @app.post("/api/v1/auth/logout")
+    def logout(req: LogoutReq,
+                _user: dict = Depends(current_user)) -> dict:
+        """Revoke the refresh-token family on logout. The access token is
+        stateless and remains valid until it expires (short TTL), but the
+        refresh chain is dead so it cannot be renewed."""
+        payload = verify_jwt(req.refresh_token, expected_kind="refresh")
+        if payload is None:
+            # Idempotent: an invalid/already-expired refresh token is fine here.
+            return {"ok": True, "revoked": 0}
+        jti = payload.get("jti")
+        with dbm.get_conn(app.state.db_path) as conn:
+            row = conn.execute(
+                "SELECT family_id FROM refresh_tokens WHERE jti=?", (jti,)
+            ).fetchone()
+            if row is None:
+                return {"ok": True, "revoked": 0}
+            n = dbm.revoke_family(conn, row["family_id"], reason="logout")
+            dbm.audit(conn, _user.get("sub", "?"), "logout",
+                       f"revoked {n} tokens in family")
+        return {"ok": True, "revoked": n}
 
     @app.get("/api/v1/tubes")
     def tubes(row: Optional[int] = None, _user: dict = Depends(current_user)) -> list[dict]:
@@ -487,6 +604,42 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 dbm.insert_alert(conn, req.tube_id, req.ts_minute, "high", "module1",
                                   f"Hotspot on {req.tube_id}: {req.wall_temp_c:.1f}°C")
         return {"ok": True, "reading_id": rid}
+
+    # ── Model versioning (Phase 2) ──────────────────────────────────
+    @app.get("/api/v1/models/versions")
+    def list_model_versions_endpoint(module: str | None = None,
+                                       _user: dict = Depends(current_user)) -> dict:
+        """List all registered model versions (optionally filtered by module).
+
+        Only manager/operator/it roles may read this; operators on the plant
+        floor only need the active model, not the audit trail of every retrain.
+        """
+        if _user.get("role") not in ("manager", "operator", "it"):
+            raise HTTPException(status_code=403, detail="Insufficient role")
+        with dbm.get_conn(app.state.db_path) as conn:
+            rows = dbm.list_model_versions(conn, module=module)
+        return {"versions": rows, "n": len(rows)}
+
+    @app.get("/api/v1/models/{module}/active")
+    def get_active_model_endpoint(module: str,
+                                    _user: dict = Depends(current_user)) -> dict:
+        """Return metadata (version, sha256, trained_at, metrics) for the
+        currently-served model of a module. Lets the dashboard show which
+        model version produced the RUL / optimization numbers the operator
+        is seeing — critical for traceability and incident postmortems.
+        """
+        with dbm.get_conn(app.state.db_path) as conn:
+            row = dbm.get_active_model_version(conn, module)
+        if row is None:
+            raise HTTPException(status_code=404, detail="No active model for this module")
+        # Parse the cached metrics JSON for convenience.
+        out = dict(row)
+        try:
+            out["metrics"] = json.loads(row["metrics_json"]) if row["metrics_json"] else None
+        except Exception:
+            out["metrics"] = None
+        out.pop("metrics_json", None)
+        return out
 
     @app.get("/")
     def root() -> dict:
