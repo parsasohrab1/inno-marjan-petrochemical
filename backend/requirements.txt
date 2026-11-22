@@ -12,6 +12,8 @@ openpyxl==3.1.5
 # Postgres driver — optional; only imported when MRTO_DATABASE_URL is a postgres:// URL.
 # Binary wheels avoid the libpq build requirement on slim images.
 psycopg2-binary==2.9.10
+# Phase 3: Prometheus metrics (optional — app degrades gracefully if missing).
+prometheus-client==0.21.0
 pytest==9.0.2
 pytest-cov==7.0.0
 pytest-asyncio==0.24.0

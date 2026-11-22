@@ -29,6 +29,13 @@ DEFAULT_DB_PATH = os.environ.get(
 _DATABASE_URL = os.environ.get("MRTO_DATABASE_URL") or os.environ.get("DATABASE_URL")
 USE_POSTGRES = bool(_DATABASE_URL and _DATABASE_URL.startswith("postgres"))
 
+# Phase 3: optional read-replica URL. When set, SELECTs go to the
+# replica and writes go to the primary. The split is decided per-call by
+# the `role` argument to get_conn (default "primary"). Endpoints that
+# only read (GET /tubes, /rul, /alerts) opt in via role="replica".
+_REPLICA_URL = os.environ.get("MRTO_READ_REPLICA_URL")
+HAS_REPLICA = bool(_REPLICA_URL and _REPLICA_URL.startswith("postgres"))
+
 
 class _PsycopgRow:
     """Lightweight dict-like wrapper over a psycopg2 tuple row."""
@@ -132,8 +139,19 @@ if USE_POSTGRES:
     import psycopg2  # noqa: F401  (imported lazily; required in prod)
 
     @contextmanager
-    def get_conn(db_path: str = DEFAULT_DB_PATH):
-        conn = psycopg2.connect(_DATABASE_URL)
+    def get_conn(db_path: str = DEFAULT_DB_PATH, role: str = "primary"):
+        """Open a connection to the primary (default) or the read replica.
+
+        `role="replica"` routes to MRTO_READ_REPLICA_URL when set, else
+        falls back to the primary. Replica connections are read-only by
+        contract; callers must not issue writes on them. This layer does
+        not enforce read-only (Postgres can, via a separate grant) — the
+        application code is responsible for only issuing SELECTs.
+        """
+        url = _DATABASE_URL
+        if role == "replica" and HAS_REPLICA:
+            url = _REPLICA_URL
+        conn = psycopg2.connect(url)
         wc = _PsycopgConn(conn)
         try:
             yield wc
@@ -144,5 +162,12 @@ if USE_POSTGRES:
         finally:
             wc.close()
 else:
-    # Re-export the SQLite implementation to keep a single import surface.
-    from mrto.db import get_conn  # noqa: F401
+    # SQLite path — replica is ignored (single-file DB); re-export the
+    # SQLite implementation to keep a single import surface.
+    from mrto.db import get_conn as _sqlite_get_conn  # noqa: F401
+
+    @contextmanager
+    def get_conn(db_path: str = DEFAULT_DB_PATH, role: str = "primary"):
+        # role is ignored on SQLite — there is no replica to route to.
+        with _sqlite_get_conn(db_path) as conn:
+            yield conn

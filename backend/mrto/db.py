@@ -177,11 +177,21 @@ def get_conn(db_path: str = DEFAULT_DB_PATH):
 
 
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
-    """Create schema and seed default data if empty."""
+    """Create schema, run pending migrations, and seed default data if empty."""
+    # Import lazily to avoid a circular import (migrations.py imports
+    # nothing from db.py at module load time, but this keeps the graph clean).
+    from mrto import migrations as mig
     with get_conn(db_path) as conn:
         # Enforce FK constraints (off by default in SQLite).
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA_SQL)
+        # Phase 3: run any pending idempotent migrations after base schema.
+        try:
+            mig.run_migrations(conn)
+        except Exception as e:
+            # Migrations should never break boot — log and continue. The
+            # schema_version row is rolled back automatically on failure.
+            print(f"MRTO: migration warning: {e}")
         # Seed default admin if no users
         cur = conn.execute("SELECT COUNT(*) FROM users")
         if cur.fetchone()[0] == 0:

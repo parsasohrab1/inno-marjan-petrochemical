@@ -358,6 +358,18 @@ jobs:
           done
           echo "Health check failed"; docker compose logs; exit 1
 
+      - name: Smoke test — deep health (DB + schema + models + disk)
+        run: |
+          curl -fsS http://localhost:8080/api/v1/health/deep | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['status'] in ('ok','degraded'), d
+          print('deep health:', d['status'])
+          for k, v in d['checks'].items():
+              if isinstance(v, dict):
+                  print(f'  {k}: ok={v.get(\"ok\")}')
+          "
+
       - name: Smoke test — auth + protected endpoint
         run: |
           TOKEN=$(curl -fsS -X POST http://localhost:8080/api/v1/auth/login \

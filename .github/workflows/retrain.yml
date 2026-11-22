@@ -1,0 +1,104 @@
+name: Nightly retrain (cron)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MRTO — nightly model retrain + smoke test.
+# Retrains all four modules on the latest synthetic + real UCI data,
+# registers the new versions in the model_versions table (via the
+# train_models.py hook added in Phase 2), and uploads the .joblib
+# artifacts so they can be promoted to staging/prod manually.
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  schedule:
+    # 03:00 UTC every day — quiet hours for the Marjan plant floor.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  retrain:
+    name: Retrain all modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate fresh synthetic data
+        run: python -m mrto.synthetic_data data/raw
+
+      - name: Train all four ML modules (registers versions in DB)
+        run: |
+          python -m mrto.train_models \
+            --out-dir data \
+            --models-dir models \
+            --report training_report_$(date -u +%Y%m%d).json
+        env:
+          MRTO_MODELS_DIR: models
+          # The training hook writes version rows to the DB at this path.
+          # In CI we use a throwaway SQLite file; in production this would
+          # point at the Postgres DSN so retrained versions land in the
+          # same model_versions table the API serves from.
+          MRTO_DB_PATH: ${{ github.workspace }}/backend/ci_retrain.sqlite3
+          MRTO_JWT_SECRET: ci-retrain-secret-only-not-used-for-serving-32chars
+          MRTO_ALLOW_INSECURE_JWT: "1"
+          MRTO_ADMIN_PASS: ci-not-used
+
+      - name: Verify quality targets
+        run: |
+          python - <<'PY'
+          import json, glob
+          report = sorted(glob.glob("training_report_*.json"))[-1]
+          with open(report) as f:
+              r = json.load(f)
+          print("Report:", report)
+          print("All SRS quality targets met:", r["all_srs_quality_targets_met"])
+          for k, v in r["metrics"].items():
+              print(f"  {k}: {v}")
+          if not r["all_srs_quality_targets_met"]:
+              print("::warning::Some SRS quality targets not met — models still uploaded for review")
+          PY
+
+      - name: Run pytest suite (regression gate)
+        run: python -m pytest tests -q --no-header
+        env:
+          MRTO_MODELS_DIR: ${{ github.workspace }}/backend/models
+          MRTO_DB_PATH: ${{ github.workspace }}/backend/ci_test.sqlite3
+
+      - name: Upload retrained models
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-models-${{ github.run_id }}
+          path: backend/models/
+
+      - name: Upload training report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-report-${{ github.run_id }}
+          path: backend/training_report_*.json
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::warning::Nightly retrain failed — check the logs and the uploaded partial artifacts."
+          echo "Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

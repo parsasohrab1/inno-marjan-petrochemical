@@ -44,6 +44,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mrto import db as dbm
 from mrto import models as mlm
 from mrto.ratelimit import RateLimiter
+from mrto import observability as obs
+
+# Phase 3: read-replica routing. When MRTO_READ_REPLICA_URL is set (Postgres
+# deployment), GET endpoints open the connection through db_adapter so
+# reads go to the replica and the primary is spared for writes. On SQLite
+# (dev/test) the replica flag is ignored and the same DB is used.
+try:
+    from mrto import db_adapter as _db_adapter
+    _HAS_REPLICA = _db_adapter.HAS_REPLICA
+except Exception:
+    _HAS_REPLICA = False
+
+
+def _read_conn(app, role: str = "replica"):
+    """Return a context manager for a read connection. Routes to the
+    replica when one is configured; otherwise falls back to the primary
+    (SQLite or single-postgres)."""
+    if _HAS_REPLICA:
+        return _db_adapter.get_conn(app.state.db_path, role=role)
+    return dbm.get_conn(app.state.db_path)
 
 MODELS_DIR = os.environ.get("MRTO_MODELS_DIR",
                               "/home/z/my-project/download/mrto/models")
@@ -86,6 +106,20 @@ def _avg_wall_temp_per_tube(conn, tube_ids: list[str]) -> dict[str, float]:
     out = {r["tube_id"]: float(r["avg_t"]) for r in rows if r["avg_t"] is not None}
     # Tubes without readings → nominal operating temperature.
     return {tid: out.get(tid, 880.0) for tid in tube_ids}
+
+
+# ────────────────────────────────────────────────────────────────────
+# Metric-path normalization (Phase 3)
+# ────────────────────────────────────────────────────────────────────
+# Collapse numeric path segments to ":id" so /alerts/5/ack and
+# /alerts/99/ack become the same Prometheus label. Without this, every
+# alert ID becomes its own time series and cardinality blows up.
+import re as _re
+_ID_RE = _re.compile(r"/\d+(?=/|$)")
+
+
+def _metric_path(path: str) -> str:
+    return _ID_RE.sub("/:id", path) if path else "/"
 
 # ────────────────────────────────────────────────────────────────────
 # Pydantic models
@@ -241,7 +275,30 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     app = FastAPI(
         title="MRTO — Methanol Reformer Tube & Operation Optimizer",
         version="1.0.0",
-        description="Smart monitoring of reformer tube health + S/C optimization. Marun Petrochemical TRL 5.",
+        description=(
+            "Smart monitoring of reformer tube health + S/C optimization "
+            "for Marjan Petrochemical (TRL 5).\n\n"
+            "**Auth**: all data endpoints require a Bearer access token from "
+            "`/api/v1/auth/login`. Refresh tokens rotate on every use; reuse "
+            "revokes the entire family. Rate-limited at 100 req/min/IP by "
+            "default, 10 logins/min/IP for brute-force protection.\n\n"
+            "**Observability**: structured JSON logs (with `request_id`), "
+            "Prometheus metrics at `/metrics`, deep health at "
+            "`/api/v1/health/deep`."
+        ),
+        openapi_tags=[
+            {"name": "health", "description": "Liveness/readiness probes"},
+            {"name": "auth", "description": "Login, refresh, logout (JWT + rotating refresh tokens)"},
+            {"name": "tubes", "description": "Reformer tube registry"},
+            {"name": "temperature", "description": "Wall-temperature readings + hotspots"},
+            {"name": "rul", "description": "Remaining-useful-life predictions (Module 2)"},
+            {"name": "optimization", "description": "S/C ratio optimization (Module 3)"},
+            {"name": "burners", "description": "Burner status + inefficiency flag (Module 4)"},
+            {"name": "alerts", "description": "Hotspot & failure alerts + ack workflow"},
+            {"name": "reports", "description": "Daily health report"},
+            {"name": "metrics", "description": "Model quality metrics + model versioning"},
+            {"name": "ingest", "description": "Write endpoints (manager/operator/it only)"},
+        ],
     )
     # CORS: configurable origins via env; default to localhost only (not "*").
     cors_origins = os.environ.get("MRTO_CORS_ORIGINS", "http://localhost:8080")
@@ -271,11 +328,49 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     )
     app.middleware("http")(limiter.as_middleware())
 
+    # Phase 3: structured logging + request ID + Prometheus metrics.
+    log = obs.get_logger("mrto.app")
+
+    @app.middleware("http")
+    async def observability_middleware(request: Request, call_next):
+        # Assign a request ID and surface it on the response so the client
+        # can correlate support tickets with server logs.
+        rid = obs.set_request_id(request.headers.get("x-request-id") or None)
+        obs.INFLIGHT and obs.INFLIGHT.inc()
+        t0 = time.time()
+        # Normalize path for metrics so /alerts/5/ack and /alerts/99/ack
+        # collapse into one label (avoids high-cardinality blowup).
+        raw_path = request.url.path
+        metric_path = _metric_path(raw_path)
+        try:
+            response: Response = await call_next(request)
+        except Exception:
+            obs.record_request(request.method, metric_path, 500,
+                               time.time() - t0)
+            log.exception("unhandled error", extra={"path": raw_path})
+            raise
+        finally:
+            if obs.INFLIGHT:
+                obs.INFLIGHT.dec()
+        obs.record_request(request.method, metric_path,
+                           response.status_code, time.time() - t0)
+        response.headers["X-Request-ID"] = rid
+        # Access log line (JSON when MRTO_LOG_PRETTY != 1).
+        log.info("request",
+                 extra={"method": request.method, "path": raw_path,
+                        "status": response.status_code,
+                        "ms": int((time.time() - t0) * 1000)})
+        return response
+
     app.state.db_path = db_path
     app.state.limiter = limiter
+    app.state.log = log
 
     # ── Endpoints ───────────────────────────────────────────────────
-    @app.get("/api/v1/health")
+    @app.get("/api/v1/health",
+             tags=["health"],
+             summary="Shallow health (load-balancer ping)",
+             response_description="200 if the process is up and the DB answers.")
     def health() -> dict:
         with dbm.get_conn(app.state.db_path) as conn:
             n_tubes = conn.execute("SELECT COUNT(*) FROM tubes").fetchone()[0]
@@ -289,15 +384,29 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "open_alerts": n_alerts,
         }
 
-    @app.post("/api/v1/auth/login")
+    @app.post("/api/v1/auth/login",
+              tags=["auth"],
+              summary="Login → access + refresh token",
+              responses={401: {"description": "Invalid credentials"},
+                         429: {"description": "Rate-limited (>10 logins/min/IP)"}})
     def login(req: LoginReq) -> dict:
         with dbm.get_conn(app.state.db_path) as conn:
             user = dbm.verify_user(conn, req.username, req.password)
             if user is None:
                 # Audit failed attempt (rate-limited above; audit gives forensics).
                 dbm.audit(conn, req.username, "login_failed", "")
+                obs.inc_login_failure()
                 raise HTTPException(status_code=401, detail="Invalid credentials")
             dbm.audit(conn, user["username"], "login", "")
+            obs.inc_login_success()
+            # Update last_login_at if the column exists (migration 2).
+            try:
+                conn.execute(
+                    "UPDATE users SET last_login_at=? WHERE id=?",
+                    (int(time.time()), user["id"])
+                )
+            except Exception:
+                pass  # column missing on unmigrated DB; harmless
             # Issue short-lived access + long-lived refresh token (DB-backed
             # so it can be rotated / revoked).
             access = make_jwt(user["username"], user["role"], kind="access")
@@ -314,7 +423,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "expires_in": JWT_TTL,
         }
 
-    @app.post("/api/v1/auth/refresh")
+    @app.post("/api/v1/auth/refresh",
+              tags=["auth"],
+              summary="Rotate refresh token (single-use)",
+              responses={401: {"description": "Invalid/expired token OR reuse detected (family revoked)"}})
     def refresh(req: RefreshReq) -> dict:
         """Exchange a valid refresh token for a new access token + rotated
         refresh token. Detects reuse: if the presented refresh token has
@@ -335,6 +447,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     # committed by the context manager. We must NOT raise inside
                     # the `with` block — doing so would rollback the revocation.
                     # Capture the signal and raise after the block exits cleanly.
+                    obs.inc_refresh_reuse()
                     pass
                 else:
                     raise HTTPException(status_code=401,
@@ -358,7 +471,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             detail="Refresh token reuse detected — session revoked"
         )
 
-    @app.post("/api/v1/auth/logout")
+    @app.post("/api/v1/auth/logout",
+              tags=["auth"],
+              summary="Revoke the refresh-token family")
     def logout(req: LogoutReq,
                 _user: dict = Depends(current_user)) -> dict:
         """Revoke the refresh-token family on logout. The access token is
@@ -548,7 +663,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "generated_at_epoch": int(time.time()),
         }
 
-    @app.get("/api/v1/metrics")
+    @app.get("/api/v1/metrics",
+             tags=["metrics"],
+             summary="Model quality metrics (from JSON files)")
     def metrics(_user: dict = Depends(current_user)) -> dict:
         """Return model quality metrics from JSON files."""
         out = {}
@@ -568,7 +685,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 out[name] = None
         return out
 
-    @app.post("/api/v1/ingest/temperature")
+    @app.post("/api/v1/ingest/temperature",
+              tags=["ingest"],
+              summary="Ingest one temperature reading (manager/operator/it)",
+              responses={403: {"description": "Insufficient role"},
+                          422: {"description": "Out-of-range input"}})
     def ingest_temp(req: TemperatureIngest,
                      _user: dict = Depends(current_user)) -> dict:
         # RBAC: only manager/operator/it roles may ingest. Anonymous viewers
@@ -600,13 +721,76 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             mean_ref = other if other is not None else (overall if overall is not None else 880.0)
             rid = dbm.insert_temperature_reading(conn, req.tube_id, req.ts_minute,
                                                   req.wall_temp_c, req.source)
+            obs.inc_ingest()
             if req.wall_temp_c > mean_ref + 30:
                 dbm.insert_alert(conn, req.tube_id, req.ts_minute, "high", "module1",
                                   f"Hotspot on {req.tube_id}: {req.wall_temp_c:.1f}°C")
         return {"ok": True, "reading_id": rid}
 
+    # ── Phase 3: Prometheus metrics + deep health ─────────────────────
+    @app.get("/metrics")
+    def prometheus_metrics() -> Response:
+        """Prometheus scrape endpoint. Exposed at /metrics (outside the
+        /api/v1 prefix) per Prometheus convention so existing scrape configs
+        work unchanged. No auth — protect at the network/ingress layer."""
+        out = obs.metrics_response()
+        if out is None:
+            return Response(content=b"# prometheus_client not installed\n",
+                            media_type="text/plain", status_code=501)
+        body, ctype = out
+        return Response(content=body, media_type=ctype)
+
+    @app.get("/api/v1/health/deep",
+             tags=["health"],
+             summary="Deep health (DB, schema, models, disk) — k8s readiness")
+    def health_deep() -> dict:
+        """Deep health check — verifies DB connectivity, schema version,
+        model availability, and disk space for the models dir. Used by
+        k8s liveness/readiness probes (the shallow /health is for the
+        Docker HEALTHCHECK and load-balancer pings)."""
+        checks = {}
+        # DB
+        try:
+            with dbm.get_conn(app.state.db_path) as conn:
+                n = conn.execute("SELECT COUNT(*) FROM tubes").fetchone()[0]
+                from mrto import migrations as mig
+                sv = mig.get_schema_version(conn)
+                checks["db"] = {"ok": True, "n_tubes": int(n),
+                                "schema_version": sv}
+        except Exception as e:
+            checks["db"] = {"ok": False, "error": str(e)}
+        # Models present (not loaded — that's a warmup concern)
+        for name, fname in [("module2_rul", "module2_rul.joblib"),
+                            ("module3_optimization", "module3_optimization.joblib"),
+                            ("module4_burner_catalyst", "module4_burner_catalyst.joblib")]:
+            p = os.path.join(MODELS_DIR, fname)
+            checks[f"model_{name}"] = {"ok": os.path.exists(p),
+                                        "path": p}
+        # Disk space for models dir (best-effort)
+        try:
+            import shutil
+            total, used, free = shutil.disk_usage(MODELS_DIR)
+            checks["disk"] = {"ok": free > 100 * 1024 * 1024,
+                              "free_mb": int(free / 1024 / 1024)}
+        except Exception as e:
+            checks["disk"] = {"ok": False, "error": str(e)}
+        all_ok = all(v.get("ok") if isinstance(v, dict) else True
+                     for v in checks.values())
+        return {
+            "status": "ok" if all_ok else "degraded",
+            "service": "mrto",
+            "version": "1.0.0",
+            "schema_version": checks["db"].get("schema_version", 0)
+                              if isinstance(checks.get("db"), dict) else 0,
+            "checks": checks,
+            "ts_epoch": int(time.time()),
+        }
+
     # ── Model versioning (Phase 2) ──────────────────────────────────
-    @app.get("/api/v1/models/versions")
+    @app.get("/api/v1/models/versions",
+             tags=["metrics"],
+             summary="List model versions (manager/operator/it)",
+             responses={403: {"description": "Insufficient role"}})
     def list_model_versions_endpoint(module: str | None = None,
                                        _user: dict = Depends(current_user)) -> dict:
         """List all registered model versions (optionally filtered by module).
