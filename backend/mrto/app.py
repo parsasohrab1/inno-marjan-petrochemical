@@ -165,7 +165,10 @@ _INSECURE_JWT_SECRETS = {
     "staging-jwt-change-me",
     "",
 }
-JWT_SECRET = os.environ.get("MRTO_JWT_SECRET", "")
+# Phase 4: route through the secrets module so the value can come from
+# env, a _FILE mount, Vault, or SOPS — not just env.
+from mrto import secrets as _sec
+JWT_SECRET = _sec.get_secret("MRTO_JWT_SECRET", "") or ""
 if JWT_SECRET in _INSECURE_JWT_SECRETS:
     raise RuntimeError(
         "MRTO_JWT_SECRET is unset or matches a known insecure placeholder. "

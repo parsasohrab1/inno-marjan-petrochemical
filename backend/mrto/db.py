@@ -195,7 +195,10 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # Seed default admin if no users
         cur = conn.execute("SELECT COUNT(*) FROM users")
         if cur.fetchone()[0] == 0:
-            admin_pass = os.environ.get("MRTO_ADMIN_PASS", "")
+            # Phase 4: route through secrets module so the admin password
+            # can come from env, a _FILE mount, Vault, or SOPS.
+            from mrto import secrets as _sec
+            admin_pass = _sec.get_secret("MRTO_ADMIN_PASS", "") or ""
             if not admin_pass or admin_pass in _INSECURE_PLACEHOLDERS:
                 # Generate a strong random password and print it once.
                 # In tests, set MRTO_ADMIN_PASS=admin123 to keep tests deterministic.

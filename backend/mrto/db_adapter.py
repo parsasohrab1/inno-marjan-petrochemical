@@ -26,14 +26,21 @@ DEFAULT_DB_PATH = os.environ.get(
 )
 
 # A postgres URL wins over the SQLite path if set.
-_DATABASE_URL = os.environ.get("MRTO_DATABASE_URL") or os.environ.get("DATABASE_URL")
+# Phase 4: route through the secrets module so the DSN can come from a
+# _FILE mount, Vault, or SOPS, not just env. We fall back to os.environ
+# for backward compatibility (and because secrets.get_secret checks env
+# first anyway, but we avoid the import if neither is set).
+from mrto import secrets as _sec
+_DATABASE_URL = (_sec.get_secret("MRTO_DATABASE_URL")
+                 or _sec.get_secret("DATABASE_URL")
+                 or "")
 USE_POSTGRES = bool(_DATABASE_URL and _DATABASE_URL.startswith("postgres"))
 
 # Phase 3: optional read-replica URL. When set, SELECTs go to the
 # replica and writes go to the primary. The split is decided per-call by
 # the `role` argument to get_conn (default "primary"). Endpoints that
 # only read (GET /tubes, /rul, /alerts) opt in via role="replica".
-_REPLICA_URL = os.environ.get("MRTO_READ_REPLICA_URL")
+_REPLICA_URL = _sec.get_secret("MRTO_READ_REPLICA_URL") or ""
 HAS_REPLICA = bool(_REPLICA_URL and _REPLICA_URL.startswith("postgres"))
 
 

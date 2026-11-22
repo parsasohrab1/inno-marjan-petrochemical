@@ -17,4 +17,8 @@ prometheus-client==0.21.0
 pytest==9.0.2
 pytest-cov==7.0.0
 pytest-asyncio==0.24.0
-requests==2.32.3
+# Phase 4: bumped 2.32.3 → 2.32.4 to fix PYSEC-2026-1872 (.netrc credential
+# leak for maliciously-crafted URLs). 2.33.0 also fixes PYSEC-2026-2275
+# (extract_zipped_paths temp-dir race); standard MRTO usage does not call
+# that helper, so 2.32.4 is sufficient. See docs/SECURITY_AUDIT.md.
+requests==2.32.4

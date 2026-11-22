@@ -1,0 +1,44 @@
+{
+  "base": "http://localhost:8006",
+  "duration_s": 30,
+  "concurrency": 20,
+  "total_requests": 19689,
+  "rps": 656.3,
+  "latency_ms": {
+    "p50": 24.0,
+    "p95": 55.6,
+    "p99": 105.5,
+    "max": 151.4
+  },
+  "status_breakdown": {
+    "200": 19689
+  },
+  "error_rate": 0.0,
+  "by_path": {
+    "/api/v1/health": {
+      "n": 3945,
+      "p50_ms": 23.7,
+      "p95_ms": 55.0
+    },
+    "/api/v1/tubes": {
+      "n": 3941,
+      "p50_ms": 24.1,
+      "p95_ms": 55.8
+    },
+    "/api/v1/rul": {
+      "n": 3939,
+      "p50_ms": 25.2,
+      "p95_ms": 57.3
+    },
+    "/api/v1/metrics": {
+      "n": 3935,
+      "p50_ms": 23.0,
+      "p95_ms": 53.4
+    },
+    "/api/v1/health/deep": {
+      "n": 3929,
+      "p50_ms": 24.2,
+      "p95_ms": 55.7
+    }
+  }
+}
