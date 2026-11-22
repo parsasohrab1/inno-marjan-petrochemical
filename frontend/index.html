@@ -306,6 +306,29 @@ if (window.location.protocol === 'http:' || window.location.protocol === 'https:
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 
+// ── Safe DOM helpers (no innerHTML with API data → XSS-safe) ──
+// `el` builds an element with optional children. Each child may be a string
+// (text node, auto-escaped) or an element. Attributes via {key:value} object.
+function el(tag, attrs = {}, ...kids) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'style' && typeof v === 'object') {
+      Object.assign(node.style, v);
+    } else if (k === 'dataset' && typeof v === 'object') {
+      Object.assign(node.dataset, v);
+    } else if (v === true) { node.setAttribute(k, ''); }
+    else if (v !== false && v != null) { node.setAttribute(k, v); }
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    node.appendChild(typeof kid === 'object' ? kid : document.createTextNode(String(kid)));
+  }
+  return node;
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+// Render children into a node without innerHTML (XSS-safe).
+function render(node, kids) { clear(node); kids.forEach(k => node.appendChild(k)); }
+
 // ── Tabs ──
 $$('.tab').forEach(t => t.addEventListener('click', () => {
   $$('.tab').forEach(x => x.classList.remove('active'));
@@ -357,45 +380,44 @@ async function loadOverview() {
     $('#ov-hotspots').textContent = tmap.hotspots ? tmap.hotspots.length : 0;
     $('#ov-alerts').textContent = health.open_alerts;
 
-    // Build combined table
+    // Build combined table — XSS-safe via el()
     const tbody = $('#ov-table tbody');
-    tbody.innerHTML = '';
     const rulMap = {};
     (rul.tubes || []).forEach(t => rulMap[t.tube_id] = t);
-    (tmap.readings || []).forEach(r => {
+    const rows = (tmap.readings || []).map(r => {
       const ru = rulMap[r.tube_id] || {};
       const p = ru.p_fail_90d || 0;
       const lvl = riskLevel(p);
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${r.tube_id}</td>
-        <td>${(parseInt(r.tube_id.split('-')[0].slice(1)) || 1)}</td>
-        <td>${(parseInt(r.tube_id.split('-')[1]) || 1)}</td>
-        <td>${r.wall_temp_c.toFixed(1)}</td>
-        <td>${ru.rul_h ? Math.round(ru.rul_h).toLocaleString('fa-IR') : '—'}</td>
-        <td>${(p * 100).toFixed(1)}%</td>
-        <td><span style="color:var(--${lvl.cls});">${lvl.text}</span></td>
-      `;
-      tbody.appendChild(tr);
+      const rowNum = (parseInt((r.tube_id.split('-')[0] || '').slice(1)) || 1);
+      const colNum = (parseInt(r.tube_id.split('-')[1]) || 1);
+      return el('tr', {},
+        el('td', {}, r.tube_id),
+        el('td', {}, String(rowNum)),
+        el('td', {}, String(colNum)),
+        el('td', {}, r.wall_temp_c.toFixed(1)),
+        el('td', {}, ru.rul_h ? Math.round(ru.rul_h).toLocaleString('fa-IR') : '—'),
+        el('td', {}, (p * 100).toFixed(1) + '%'),
+        el('td', {}, el('span', { style: { color: `var(--${lvl.cls})` } }, lvl.text)),
+      );
     });
+    render(tbody, rows);
+
     // Hotspot table
     const ht = $('#hotspot-table tbody');
-    ht.innerHTML = '';
-    (tmap.hotspots || []).forEach(h => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${h.tube_id}</td><td>${h.wall_temp_c.toFixed(1)}</td><td>+${h.delta_c.toFixed(1)}</td>`;
-      ht.appendChild(tr);
-    });
+    const hrows = (tmap.hotspots || []).map(h => el('tr', {},
+      el('td', {}, h.tube_id),
+      el('td', {}, h.wall_temp_c.toFixed(1)),
+      el('td', {}, '+' + h.delta_c.toFixed(1)),
+    ));
+    render(ht, hrows);
+
     // Heatmap
     const hm = $('#heatmap');
-    hm.innerHTML = '';
-    (tmap.readings || []).forEach(r => {
-      const c = document.createElement('div');
-      c.className = 'heat-cell ' + tempClass(r.wall_temp_c);
-      c.dataset.info = `${r.tube_id}: ${r.wall_temp_c.toFixed(1)}°C`;
-      c.title = `${r.tube_id}: ${r.wall_temp_c.toFixed(1)}°C`;
-      hm.appendChild(c);
+    const cells = (tmap.readings || []).map(r => {
+      const info = `${r.tube_id}: ${r.wall_temp_c.toFixed(1)}°C`;
+      return el('div', { class: 'heat-cell ' + tempClass(r.wall_temp_c), title: info, dataset: { info } });
     });
+    render(hm, cells);
   } catch (e) {
     $('#pill-status').textContent = 'خطا در اتصال';
     console.error(e);
@@ -407,20 +429,20 @@ async function loadRUL() {
   try {
     const rul = await getJSON('/api/v1/rul');
     const tbody = $('#rul-table tbody');
-    tbody.innerHTML = '';
-    (rul.tubes || []).forEach(t => {
+    const rows = (rul.tubes || []).map(t => {
       const lvl = riskLevel(t.p_fail_90d);
       const pct = Math.max(0, Math.min(1, t.rul_h / 100000));
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${t.tube_id}</td>
-        <td>${Math.round(t.rul_h).toLocaleString('fa-IR')}</td>
-        <td>${(t.p_fail_90d * 100).toFixed(1)}%</td>
-        <td><span style="color:var(--${lvl.cls});">${lvl.text}</span></td>
-        <td><div class="gauge" style="max-width:140px;"><div class="gauge-fill" style="width:${(1-pct)*100}%;"></div></div></td>
-      `;
-      tbody.appendChild(tr);
+      return el('tr', {},
+        el('td', {}, t.tube_id),
+        el('td', {}, Math.round(t.rul_h).toLocaleString('fa-IR')),
+        el('td', {}, (t.p_fail_90d * 100).toFixed(1) + '%'),
+        el('td', {}, el('span', { style: { color: `var(--${lvl.cls})` } }, lvl.text)),
+        el('td', {}, el('div', { class: 'gauge', style: { maxWidth: '140px' } },
+          el('div', { class: 'gauge-fill', style: { width: ((1 - pct) * 100) + '%' } }),
+        )),
+      );
     });
+    render(tbody, rows);
   } catch (e) { console.error(e); }
 }
 
@@ -434,27 +456,32 @@ $('#opt-run').addEventListener('click', async () => {
     fuel_flow_nm3h: parseFloat($('#opt-fuel').value),
     alpha_eff: 0.7, alpha_fuel: 0.3,
   };
+  const box = $('#opt-result');
   try {
     const r = await postJSON('/api/v1/optimization', body);
-    const box = $('#opt-result');
     box.style.display = 'block';
+    clear(box);
     if (r.error) {
-      box.innerHTML = `<b style="color:var(--danger);">خطا: ${r.error}</b>`;
+      box.appendChild(el('b', { style: { color: 'var(--danger)' } }, 'خطا: ' + r.error));
       return;
     }
-    box.innerHTML = `
-      <p><b>S/C بهینه:</b> ${r.sc_ratio_opt.toFixed(3)}</p>
-      <p><b>دمای خروجی بهینه:</b> ${r.t_out_c_opt.toFixed(1)} °C</p>
-      <p><b>بازده پیش‌بینی‌شده:</b> ${((r.efficiency_pred||0)*100).toFixed(2)}%</p>
-      <p><b>ریسک رسوب کک:</b> ${(r.coking_risk_pred||0).toFixed(3)} (محدودیت ≤ ۰.۵)</p>
-      <p><b>سوخت مصرفی:</b> ${Math.round(r.fuel_pred_nm3h)} Nm³/h</p>
-      <p><b>صرفه‌جویی سوخت:</b> <span style="color:${r.fuel_saving_pct>0?'var(--ok)':'var(--warn)'};">${r.fuel_saving_pct.toFixed(2)}%</span></p>
-    `;
-    $('#ov-eff').textContent = ((r.efficiency_pred||0)*100).toFixed(1) + '%';
-    $('#ov-fuel').textContent = (r.fuel_saving_pct||0).toFixed(2) + '%';
+    const savingColor = r.fuel_saving_pct > 0 ? 'var(--ok)' : 'var(--warn)';
+    const kids = [
+      el('p', {}, el('b', {}, 'S/C بهینه: '), r.sc_ratio_opt.toFixed(3)),
+      el('p', {}, el('b', {}, 'دمای خروجی بهینه: '), r.t_out_c_opt.toFixed(1) + ' °C'),
+      el('p', {}, el('b', {}, 'بازده پیش‌بینی‌شده: '), ((r.efficiency_pred || 0) * 100).toFixed(2) + '%'),
+      el('p', {}, el('b', {}, 'ریسک رسوب کک: '), (r.coking_risk_pred || 0).toFixed(3) + ' (محدودیت ≤ ۰.۵)'),
+      el('p', {}, el('b', {}, 'سوخت مصرفی: '), Math.round(r.fuel_pred_nm3h) + ' Nm³/h'),
+      el('p', {}, el('b', {}, 'صرفه‌جویی سوخت: '),
+         el('span', { style: { color: savingColor } }, (r.fuel_saving_pct || 0).toFixed(2) + '%')),
+    ];
+    kids.forEach(k => box.appendChild(k));
+    $('#ov-eff').textContent = ((r.efficiency_pred || 0) * 100).toFixed(1) + '%';
+    $('#ov-fuel').textContent = (r.fuel_saving_pct || 0).toFixed(2) + '%';
   } catch (e) {
-    $('#opt-result').style.display = 'block';
-    $('#opt-result').innerHTML = `<b style="color:var(--danger);">خطا: ${e.message}</b>`;
+    box.style.display = 'block';
+    clear(box);
+    box.appendChild(el('b', { style: { color: 'var(--danger)' } }, 'خطا: ' + e.message));
   }
 });
 
@@ -463,18 +490,18 @@ async function loadBurners() {
   try {
     const b = await getJSON('/api/v1/burners');
     const tbody = $('#burner-table tbody');
-    tbody.innerHTML = '';
-    (b.burners || []).forEach(br => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${br.burner_id}</td>
-        <td>${(br.intensity ?? 0).toFixed(2)}</td>
-        <td>${(br.fuel_flow ?? 0).toFixed(0)}</td>
-        <td>${(br.angle ?? 0).toFixed(1)}</td>
-        <td>${br.inefficient ? '<span style="color:var(--danger);">ناکارآمد</span>' : '<span style="color:var(--ok);">نرمال</span>'}</td>
-      `;
-      tbody.appendChild(tr);
+    const rows = (b.burners || []).map(br => {
+      const statusTxt = br.inefficient ? 'ناکارآمد' : 'نرمال';
+      const statusColor = br.inefficient ? 'var(--danger)' : 'var(--ok)';
+      return el('tr', {},
+        el('td', {}, br.burner_id),
+        el('td', {}, (br.intensity ?? 0).toFixed(2)),
+        el('td', {}, (br.fuel_flow ?? 0).toFixed(0)),
+        el('td', {}, (br.angle ?? 0).toFixed(1)),
+        el('td', {}, el('span', { style: { color: statusColor } }, statusTxt)),
+      );
     });
+    render(tbody, rows);
   } catch (e) { console.error(e); }
 }
 
@@ -483,33 +510,35 @@ async function loadAlerts() {
   try {
     const a = await getJSON('/api/v1/alerts');
     const list = $('#alerts-list');
-    list.innerHTML = '';
     if (a.alerts.length === 0) {
-      list.innerHTML = '<p style="color:var(--text-soft);">هیچ هشدار فعالی وجود ندارد.</p>';
+      render(list, [el('p', { style: { color: 'var(--text-soft)' } }, 'هیچ هشدار فعالی وجود ندارد.')]);
       return;
     }
-    a.alerts.forEach(al => {
-      const div = document.createElement('div');
-      div.className = 'alert-row' + (al.severity === 'high' ? '' : ' warn');
-      div.innerHTML = `
-        <div class="severity">${al.severity === 'high' ? 'بحرانی' : 'هشدار'}</div>
-        <div class="info">
-          <b>${al.message}</b>
-          <small>لوله: ${al.tube_id || '—'} | ماژول: ${al.module} | زمان: ${al.ts_minute} دقیقه</small>
-        </div>
-        <button class="btn small" data-ack="${al.id}">تأیید</button>
-      `;
-      list.appendChild(div);
-    });
-    list.querySelectorAll('[data-ack]').forEach(btn => {
+    const cards = a.alerts.map(al => {
+      const btn = el('button', { class: 'btn small', dataset: { ack: String(al.id) } }, 'تأیید');
       btn.addEventListener('click', async () => {
         try {
           await postJSON(`/api/v1/alerts/${btn.dataset.ack}/ack`, {});
           loadAlerts();
           loadOverview();
-        } catch (e) { alert('خطا در تأیید: ' + e.message); }
+        } catch (e) {
+          // Inline non-blocking error (no alert()) — XSS-safe.
+          const toast = el('div', { style: { color: 'var(--danger)', padding: '4px' } },
+                           'خطا در تأیید: ' + e.message);
+          list.prepend(toast);
+          setTimeout(() => toast.remove(), 4000);
+        }
       });
+      return el('div', { class: 'alert-row' + (al.severity === 'high' ? '' : ' warn') },
+        el('div', { class: 'severity' }, al.severity === 'high' ? 'بحرانی' : 'هشدار'),
+        el('div', { class: 'info' },
+          el('b', {}, al.message || ''),
+          el('small', {}, 'لوله: ' + (al.tube_id || '—') + ' | ماژول: ' + (al.module || '') + ' | زمان: ' + (al.ts_minute ?? '—') + ' دقیقه'),
+        ),
+        btn,
+      );
     });
+    render(list, cards);
   } catch (e) { console.error(e); }
 }
 
@@ -543,10 +572,8 @@ const MODULE_LABEL = {
 async function loadMetrics() {
   try {
     const m = await getJSON('/api/v1/metrics');
-    const cards = $('#metrics-cards');
-    cards.innerHTML = '';
     const tbody = $('#metrics-table tbody');
-    tbody.innerHTML = '';
+    const rows = [];
     Object.keys(SRS_TARGETS).forEach(k => {
       const data = m[k];
       if (!data) return;
@@ -554,17 +581,17 @@ async function loadMetrics() {
         const v = data[key];
         if (v === undefined || v === null) return;
         const passed = ok(v);
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${MODULE_LABEL[k]}</td>
-          <td>${key}</td>
-          <td>${typeof v === 'number' ? v.toFixed(4) : v}</td>
-          <td>${label}</td>
-          <td style="color:var(--${passed?'ok':'danger'});">${passed ? '✓ برآورده' : '✗ برآورده‌نشده'}</td>
-        `;
-        tbody.appendChild(tr);
+        rows.push(el('tr', {},
+          el('td', {}, MODULE_LABEL[k]),
+          el('td', {}, key),
+          el('td', {}, typeof v === 'number' ? v.toFixed(4) : String(v)),
+          el('td', {}, label),
+          el('td', { style: { color: `var(--${passed ? 'ok' : 'danger'})` } },
+             passed ? '✓ برآورده' : '✗ برآورده‌نشده'),
+        ));
       });
     });
+    render(tbody, rows);
   } catch (e) { console.error(e); }
 }
 

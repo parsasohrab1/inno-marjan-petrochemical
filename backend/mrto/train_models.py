@@ -59,21 +59,38 @@ def _mix_into_sc(synthetic_sc: pd.DataFrame, real_ccpp: pd.DataFrame | None) -> 
 
 
 def _mix_into_burner(synthetic_b: pd.DataFrame, real_airfoil: pd.DataFrame | None) -> pd.DataFrame:
-    """Augment burner data with airfoil-derived features (intensity, avg_tube_t_c)."""
+    """Augment burner data with airfoil-derived features (intensity, avg_tube_t_c).
+
+    The inefficiency label is derived from a *combination* of physical signals
+    (low intensity + high tube stress from sound pressure), NOT from a single
+    threshold of one input feature. This avoids the tautological-label bug
+    where the target was a deterministic function of a single input column.
+    """
     if real_airfoil is None or len(real_airfoil) == 0:
         return synthetic_b
     keep_cols = ["intensity", "avg_tube_t_c"]
     if not all(c in real_airfoil.columns for c in keep_cols):
         return synthetic_b
     n = len(real_airfoil)
+    rng = np.random.default_rng(13)
+    # Tube stress from airfoil sound_pressure (physical proxy: high acoustic
+    # load → tube vibration stress). Normalised to [0, 1].
+    sp = real_airfoil["sound_pressure"].astype(float).values if "sound_pressure" in real_airfoil.columns \
+        else rng.uniform(110, 140, n)
+    tube_stress = (sp - sp.min()) / max(sp.ptp(), 1e-9)
+    # Inefficiency = (low intensity AND high tube stress) OR (very low intensity).
+    # Both must hold; this is a physical conjunction, not a single-feature threshold.
+    intensity_arr = real_airfoil["intensity"].astype(float).clip(0.4, 1.3).values
+    avg_t = real_airfoil["avg_tube_t_c"].astype(float).clip(700, 1000).values
+    label = ((intensity_arr < 0.75) & (tube_stress > 0.6)) | (intensity_arr < 0.5)
     aug = pd.DataFrame({
         "burner_id": [f"REAL-B{i:03d}" for i in range(n)],
-        "intensity": real_airfoil["intensity"].astype(float).clip(0.4, 1.3).values,
-        "fuel_flow_nm3h": np.random.default_rng(11).uniform(150, 250, n),
-        "angle_deg": np.random.default_rng(12).uniform(-10, 10, n),
-        "age_h": np.random.default_rng(13).uniform(0, 10000, n),
-        "avg_tube_t_c": real_airfoil["avg_tube_t_c"].astype(float).clip(700, 1000).values,
-        "label_inefficient": (real_airfoil["intensity"] < 0.75).astype(int).values,
+        "intensity": intensity_arr,
+        "fuel_flow_nm3h": rng.uniform(150, 250, n),
+        "angle_deg": rng.uniform(-10, 10, n),
+        "age_h": rng.uniform(0, 10000, n),
+        "avg_tube_t_c": avg_t,
+        "label_inefficient": label.astype(int),
     })
     return pd.concat([synthetic_b, aug], ignore_index=True)
 

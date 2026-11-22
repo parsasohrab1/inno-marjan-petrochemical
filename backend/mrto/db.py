@@ -12,16 +12,44 @@ Schema (see SRS §5-1):
 from __future__ import annotations
 
 import os
+import secrets as _secrets
 import sqlite3
 import json
 import time
 from contextlib import contextmanager
 from typing import Iterable
 
+import bcrypt
+
 DEFAULT_DB_PATH = os.environ.get(
     "MRTO_DB_PATH",
     "/home/z/my-project/download/mrto/data/mrto.sqlite3"
 )
+
+# Known insecure placeholders — refusing to seed these prevents shipping the
+# default credential to production. Operators must set MRTO_ADMIN_PASS env
+# or let init_db generate a random one (printed once to stdout).
+# NOTE: "admin123" is NOT in this list because it's the documented test/dev
+# password (set via MRTO_ADMIN_PASS=admin123 in conftest.py). Production must
+# set a strong MRTO_ADMIN_PASS or leave it unset to get a random one.
+_INSECURE_PLACEHOLDERS = {
+    "change-me", "change-me-before-deploy",
+    "password", "REPLACE_ME", "REPLACE_WITH_KUBECTL_CREATE_SECRET",
+    "",
+}
+
+
+def _hash_password(password: str) -> str:
+    """Return a bcrypt hash (12 rounds) of the password."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    """Constant-time bcrypt verification. Returns False on any failure."""
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS tubes (
@@ -105,9 +133,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 @contextmanager
 def get_conn(db_path: str = DEFAULT_DB_PATH):
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    # Enable foreign-key enforcement (off by default in SQLite).
+    conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
         conn.commit()
@@ -121,16 +151,25 @@ def get_conn(db_path: str = DEFAULT_DB_PATH):
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     """Create schema and seed default data if empty."""
     with get_conn(db_path) as conn:
+        # Enforce FK constraints (off by default in SQLite).
+        conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA_SQL)
         # Seed default admin if no users
         cur = conn.execute("SELECT COUNT(*) FROM users")
         if cur.fetchone()[0] == 0:
-            # Default password: admin123 (bcrypt-style placeholder using simple hash for tests)
-            import hashlib
-            ph = hashlib.sha256("admin123".encode()).hexdigest()
+            admin_pass = os.environ.get("MRTO_ADMIN_PASS", "")
+            if not admin_pass or admin_pass in _INSECURE_PLACEHOLDERS:
+                # Generate a strong random password and print it once.
+                # In tests, set MRTO_ADMIN_PASS=admin123 to keep tests deterministic.
+                admin_pass = _secrets.token_urlsafe(24)
+                print("=" * 70)
+                print("MRTO: generated random admin password (set MRTO_ADMIN_PASS")
+                print("      to override, or change via /api/v1/users/* later):")
+                print(f"      username=admin  password={admin_pass}")
+                print("=" * 70)
             conn.execute(
                 "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                ("admin", ph, "manager")
+                ("admin", _hash_password(admin_pass), "manager")
             )
         # Seed default tube metadata if empty
         cur = conn.execute("SELECT COUNT(*) FROM tubes")
@@ -217,12 +256,18 @@ def ack_alert(conn, alert_id: int, username: str = "system") -> bool:
 
 
 def verify_user(conn, username: str, password: str) -> dict | None:
-    import hashlib
-    ph = hashlib.sha256(password.encode()).hexdigest()
+    """Verify credentials with constant-time bcrypt check."""
     row = conn.execute(
-        "SELECT * FROM users WHERE username=? AND password_hash=?", (username, ph)
+        "SELECT * FROM users WHERE username=?", (username,)
     ).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        # Run a dummy bcrypt check to keep response time constant and prevent
+        # username enumeration via timing.
+        _verify_password(password, "$2b$12$" + "x" * 53)
+        return None
+    if not _verify_password(password, row["password_hash"]):
+        return None
+    return dict(row)
 
 
 def audit(conn, username: str, action: str, detail: str = "") -> None:

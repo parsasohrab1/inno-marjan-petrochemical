@@ -1,0 +1,54 @@
+# Python caches & build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# Test fixtures — never needed in the runtime image
+tests/
+backend/tests/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Local dev data & models (mounted as volumes in prod)
+data/raw/
+models/*.joblib
+*.sqlite3
+
+# Git & CI
+.git/
+.github/
+.gitignore
+
+# Docs (built separately)
+docs/
+*.md
+!backend/README.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local scripts (dev only)
+scripts/seed_live_dashboard.py
+scripts/seed_burners.py
