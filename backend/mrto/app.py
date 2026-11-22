@@ -409,7 +409,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         ],
     )
     # CORS: configurable origins via env; default to localhost only (not "*").
-    cors_origins = os.environ.get("MRTO_CORS_ORIGINS", "http://localhost:8080")
+    cors_origins = os.environ.get(
+        "MRTO_CORS_ORIGINS",
+        "http://localhost:8080,http://127.0.0.1:8080",
+    )
     allow_list = [o.strip() for o in cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,

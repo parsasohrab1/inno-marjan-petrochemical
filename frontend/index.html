@@ -790,8 +790,9 @@ async function loadMetrics() {
 function refreshLive() {
   return Promise.allSettled([loadOverview(), loadRUL(), loadBurners(), loadAlerts()]);
 }
-refreshLive().then((results) => {
-  if (results[0] && results[0].status === 'fulfilled') {
+refreshLive().then(() => {
+  const pill = $('#pill-status');
+  if (pill && pill.textContent === 'متصل') {
     $('#login-overlay').classList.add('hidden');
   }
 });

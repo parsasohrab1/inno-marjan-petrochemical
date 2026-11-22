@@ -148,8 +148,11 @@ Write-Step "Installing backend dependencies"
 
 $ReqFile = Join-Path $BackendDir 'requirements.txt'
 & $VenvPython -m pip install -r $ReqFile --quiet
-& $VenvPython -m pip install pyjwt bcrypt --quiet
-Write-OK "fastapi, uvicorn, sklearn, pandas, numpy, joblib, pyjwt, bcrypt installed"
+if ($LASTEXITCODE -ne 0) {
+    Write-Err "pip install failed (exit $LASTEXITCODE)"
+    exit 1
+}
+Write-OK "Backend dependencies installed"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. Regenerate synthetic data if missing
@@ -289,6 +292,7 @@ $env:MRTO_JWT_SECRET  = $backendEnv.MRTO_JWT_SECRET
 $env:MRTO_ADMIN_USER  = $backendEnv.MRTO_ADMIN_USER
 $env:MRTO_ADMIN_PASS  = $backendEnv.MRTO_ADMIN_PASS
 $env:MRTO_LIVE_SIM    = $backendEnv.MRTO_LIVE_SIM
+$env:MRTO_CORS_ORIGINS = "http://127.0.0.1:${DashboardPort},http://localhost:${DashboardPort}"
 $env:PYTHONUNBUFFERED = '1'
 
 $backendOut = Join-Path $LogDir 'backend.out.log'
