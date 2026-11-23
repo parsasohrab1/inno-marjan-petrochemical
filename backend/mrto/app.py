@@ -106,6 +106,20 @@ def _get_model(name: str):
 
 _HOT_TUBES = ("T01-003", "T02-003")
 _DEGRADED_BURNERS = {"B01-L": 0.52, "B03-R": 0.40}
+# Bed conditions fed to the Module 4 activity model. Replacement is the
+# training label: activity below 0.4.
+_CATALYST_BED = {"age_h": 8000.0, "sc_avg": 3.0, "dp_bar": 1.6}
+_CATALYST_REPLACE_BELOW = 0.4
+
+
+def _catalyst_status(activity: float | None) -> str:
+    if activity is None:
+        return "unknown"
+    if activity < _CATALYST_REPLACE_BELOW:
+        return "replace"
+    if activity < 0.75:
+        return "aging"
+    return "healthy"
 
 
 def _live_loop(db_path: str) -> None:
@@ -747,10 +761,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     for b, p in zip(burners_list, preds):
                         b["inefficient"] = int(p)
                 activity = model.predict_activity(pd.DataFrame([{
-                    "age_h": 8000.0,
+                    "age_h": _CATALYST_BED["age_h"],
                     "t_out_avg_c": mean_wall,
-                    "sc_avg": 3.0,
-                    "dp_bar": 1.6,
+                    "sc_avg": _CATALYST_BED["sc_avg"],
+                    "dp_bar": _CATALYST_BED["dp_bar"],
                 }]))
                 catalyst_activity = round(float(activity[0]), 4)
             except Exception:
@@ -760,6 +774,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "n": len(burners_list),
             "catalyst_activity": catalyst_activity,
             "mean_wall_temp_c": round(mean_wall, 2),
+            "catalyst": {
+                "activity": catalyst_activity,
+                "status": _catalyst_status(catalyst_activity),
+                "age_h": _CATALYST_BED["age_h"],
+                "sc_avg": _CATALYST_BED["sc_avg"],
+                "dp_bar": _CATALYST_BED["dp_bar"],
+                "t_out_avg_c": round(mean_wall, 2),
+                "replace_below": _CATALYST_REPLACE_BELOW,
+            },
         }
 
     @app.get("/api/v1/alerts")

@@ -457,6 +457,12 @@ def test_burners_keep_latest_row_per_burner(tmp_path):
     by_id = {b["burner_id"]: b for b in body["burners"]}
     assert by_id["B01-L"]["ts_minute"] == 2
     assert body["n"] == 1
+    cat = body["catalyst"]
+    assert cat["status"] in {"healthy", "aging", "replace", "unknown"}
+    assert cat["age_h"] == 8000.0
+    assert cat["dp_bar"] == 1.6
+    assert cat["sc_avg"] == 3.0
+    assert cat["activity"] == body["catalyst_activity"]
 
 
 def test_temperature_map_reports_latest_timestamp(client):

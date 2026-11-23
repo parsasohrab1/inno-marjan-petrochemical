@@ -72,6 +72,7 @@
   .card.danger .value { color: var(--danger); }
   .card.ok .value { color: var(--ok); }
   .card .delta { font-size: 0.8rem; color: var(--text-soft); margin-top: 4px; }
+  .section-title { margin: 16px 0 10px; color: var(--text); font-size: 1rem; font-weight: 600; }
 
   .heatmap {
     display: grid; gap: 2px; margin: 12px 0;
@@ -314,8 +315,11 @@
   <div class="tab-content" data-content="burners">
     <div class="panel">
       <h2>ماژول ۴ — پایش مشعل‌ها و کاتالیست</h2>
-      <p style="color:var(--text-soft); font-size:0.88rem;">فقط آخرین قرائت هر مشعل نشان داده می‌شود. برچسب ناکارآمدی از مدل ماژول ۴ است.</p>
-      <p id="catalyst-activity" style="color:var(--accent); font-weight:600;">فعالیت کاتالیست: —</p>
+      <p style="color:var(--text-soft); font-size:0.88rem;">وضعیت بستر کاتالیست از مدل ماژول ۴ است و دمای خروجی از میانگین زنده دیواره لوله‌ها می‌آید. جدول پایین فقط آخرین قرائت هر مشعل را نشان می‌دهد.</p>
+      <h3 class="section-title">وضعیت کاتالیست</h3>
+      <div class="grid-cards" id="catalyst-cards"></div>
+      <p id="catalyst-note" style="color:var(--text-soft); font-size:0.85rem; margin-top:10px;"></p>
+      <h3 class="section-title">وضعیت مشعل‌ها</h3>
       <div class="scroll-wrap">
         <table class="data" id="burner-table">
           <thead><tr><th>مشعل</th><th>شدت</th><th>دبی سوخت (Nm³/h)</th><th>زاویه (°)</th><th>وضعیت پیش‌بینی</th></tr></thead>
@@ -665,15 +669,76 @@ $('#opt-run').addEventListener('click', async () => {
 });
 
 // ── Burners ──
+const CATALYST_STATUS_FA = {
+  healthy: 'سالم',
+  aging: 'افت فعالیت',
+  replace: 'نیاز به تعویض',
+  unknown: 'نامشخص',
+};
+const CATALYST_ADVICE = {
+  healthy: 'بستر در محدوده سالم است و تعویض لازم نیست.',
+  aging: 'فعالیت افت کرده است. پایش ادامه یابد؛ هنوز به آستانه تعویض نرسیده.',
+  replace: 'فعالیت زیر ۴۰٪ است. تعویض کاتالیست پیشنهاد می‌شود.',
+  unknown: 'مدل کاتالیست در دسترس نیست.',
+};
+function catalystStatusOf(activity, reported) {
+  if (reported) return reported;
+  if (activity == null || Number.isNaN(activity)) return 'unknown';
+  if (activity < 0.4) return 'replace';
+  if (activity < 0.75) return 'aging';
+  return 'healthy';
+}
+function faNum(value, digits) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  return Number(value).toLocaleString('fa-IR', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
 async function loadBurners() {
   try {
     const b = await getJSON('/api/v1/burners');
-    const cat = $('#catalyst-activity');
-    if (cat) {
-      cat.textContent = b.catalyst_activity == null
-        ? 'فعالیت کاتالیست: —'
-        : `فعالیت کاتالیست: ${(Number(b.catalyst_activity) * 100).toFixed(1)}٪`;
+    const cat = b.catalyst || {};
+    const activity = cat.activity != null ? Number(cat.activity)
+      : (b.catalyst_activity != null ? Number(b.catalyst_activity) : null);
+    const status = catalystStatusOf(activity, cat.status);
+    const cls = status === 'healthy' ? 'ok' : status === 'aging' ? 'warn' : status === 'replace' ? 'danger' : '';
+    const cards = $('#catalyst-cards');
+    if (cards) {
+      render(cards, [
+        el('div', { class: 'card ' + cls },
+          el('div', { class: 'label' }, 'وضعیت'),
+          el('div', { class: 'value' }, CATALYST_STATUS_FA[status] || 'نامشخص'),
+          el('div', { class: 'delta' }, 'آستانه تعویض: فعالیت زیر ۴۰٪'),
+        ),
+        el('div', { class: 'card ' + cls },
+          el('div', { class: 'label' }, 'فعالیت کاتالیست'),
+          el('div', { class: 'value' }, activity == null ? '—' : (activity * 100).toFixed(1) + '٪'),
+        ),
+        el('div', { class: 'card' },
+          el('div', { class: 'label' }, 'سن بستر'),
+          el('div', { class: 'value' }, faNum(cat.age_h, 0)),
+          el('div', { class: 'delta' }, 'ساعت از آخرین بارگذاری'),
+        ),
+        el('div', { class: 'card' },
+          el('div', { class: 'label' }, 'افت فشار بستر'),
+          el('div', { class: 'value' }, faNum(cat.dp_bar, 2)),
+          el('div', { class: 'delta' }, 'bar'),
+        ),
+        el('div', { class: 'card' },
+          el('div', { class: 'label' }, 'نسبت بخار به کربن'),
+          el('div', { class: 'value' }, faNum(cat.sc_avg, 2)),
+          el('div', { class: 'delta' }, 'میانگین بهره‌برداری'),
+        ),
+        el('div', { class: 'card' },
+          el('div', { class: 'label' }, 'دمای خروجی'),
+          el('div', { class: 'value' }, faNum(cat.t_out_avg_c != null ? cat.t_out_avg_c : b.mean_wall_temp_c, 1)),
+          el('div', { class: 'delta' }, '°C — از نقشه دمای زنده'),
+        ),
+      ]);
     }
+    const note = $('#catalyst-note');
+    if (note) note.textContent = CATALYST_ADVICE[status] || '';
     const tbody = $('#burner-table tbody');
     const rows = (b.burners || []).map(br => {
       const statusTxt = br.inefficient ? 'ناکارآمد' : 'نرمال';
