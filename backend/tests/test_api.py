@@ -495,9 +495,13 @@ def test_maintenance_plan_covers_every_tube(client):
 
 def test_digital_twin_line_order(client):
     body = client.get("/api/v1/digital-twin").json()
-    assert [n["id"] for n in body["nodes"]] == ["feed", "reformer", "burners", "catalyst", "syngas"]
+    assert [n["id"] for n in body["nodes"]] == [
+        "feed", "compress", "hds", "saturator", "primary", "secondary", "synthesis",
+    ]
     assert body["nodes"][0]["light"] == "grey"
     assert body["nodes"][-1]["light"] == "grey"
+    primary = next(n for n in body["nodes"] if n["id"] == "primary")
+    assert "tubes" in primary and "burners" in primary
 
 
 def test_reconciliation_flags_impossible_temperature(client):
@@ -511,5 +515,64 @@ def test_reconciliation_flags_impossible_temperature(client):
     body = client.get("/api/v1/reconciliation").json()
     by_id = {c["id"]: c for c in body["checks"]}
     assert by_id["temp_range"]["status"] == "fail"
+    assert body["n_pass"] + body["n_warn"] + body["n_fail"] == len(body["checks"])
+    assert 0 <= body["score"] <= 1
+
+
+def test_carbon_converts_live_burner_fuel(tmp_path):
+    from mrto import db as dbm
+    db_path = str(tmp_path / "carbon.sqlite3")
+    app = create_app(db_path=db_path)
+    with dbm.get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO burner_status (burner_id, ts_minute, fuel_flow, intensity, angle) VALUES (?,?,?,?,?)",
+            ("B01-L", 1, 180, 0.95, 0),
+        )
+        conn.execute(
+            "INSERT INTO burner_status (burner_id, ts_minute, fuel_flow, intensity, angle) VALUES (?,?,?,?,?)",
+            ("B02-R", 1, 190, 0.94, 0),
+        )
+        conn.execute(
+            "INSERT INTO burner_status (burner_id, ts_minute, fuel_flow, intensity, angle) VALUES (?,?,?,?,?)",
+            ("B01-L", 2, 200, 0.95, 0),
+        )
+        conn.execute(
+            "INSERT INTO burner_status (burner_id, ts_minute, fuel_flow, intensity, angle) VALUES (?,?,?,?,?)",
+            ("B02-R", 2, 250, 0.40, 0),
+        )
+    with TestClient(app) as c:
+        body = c.get("/api/v1/carbon").json()
+    assert body["emission_factor_kg_per_nm3"] == 1.972
+    assert body["burner_fuel_nm3h"] == 450.0
+    assert abs(body["combustion_co2_kg_h"] - 450 * 1.972) < 0.2
+    assert len(body["history"]) == 2
+    assert body["history"][-1]["ts_minute"] == 2
+    furnace = body["furnace"]
+    assert furnace["baseline_fuel_nm3h"] == 11500.0
+    if furnace["fuel_opt_nm3h"] is not None:
+        assert abs(furnace["co2_opt_kg_h"] - furnace["fuel_opt_nm3h"] * 1.972) < 1
+        assert abs(furnace["co2_saving_kg_h"] - (furnace["baseline_co2_kg_h"] - furnace["co2_opt_kg_h"])) < 0.2
+    if furnace["co2_t_per_t"] is not None:
+        assert furnace["methanol_t_h"] > 0
+        assert furnace["sec_gj_per_t"] > 0
+
+
+def test_benchmark_flags_tube_hotter_than_100000h_reference(client):
+    h = _auth_headers(_manager_token(client))
+    posted = client.post(
+        "/api/v1/ingest/temperature",
+        json={"tube_id": "T01-003", "ts_minute": 8, "wall_temp_c": 960},
+        headers=h,
+    )
+    assert posted.status_code == 200, posted.text
+    body = client.get("/api/v1/benchmark").json()
+    by_id = {item["id"]: item for item in body["checks"]}
+    assert by_id["twt_design"]["reference"] == 927
+    assert by_id["twt_design"]["status"] == "fail"
+    assert body["tubes_above_design"] >= 1
+    assert by_id["co2_intensity"]["reference"] == 0.497
+    assert by_id["specific_energy"]["reference"] == 30
+    assert body["carbon_chart"][2]["value"] == 0.497
+    assert body["energy_chart"][4]["value"] == 20
     assert body["n_pass"] + body["n_warn"] + body["n_fail"] == len(body["checks"])
     assert 0 <= body["score"] <= 1

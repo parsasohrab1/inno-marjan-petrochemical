@@ -383,60 +383,78 @@ def _digital_twin(db_path: str) -> dict:
         }
         for r in readings
     ]
-    reformer_light = _worst_light([t["light"] for t in tube_nodes]) if tube_nodes else "grey"
+    tube_light = _worst_light([t["light"] for t in tube_nodes]) if tube_nodes else "grey"
     burner_light = _worst_light([b["light"] for b in furnace["burners"]]) if furnace["burners"] else "grey"
     cat = furnace["catalyst"]
+    primary_light = _worst_light([tube_light, burner_light, cat["light"]])
     inefficient = sum(1 for b in furnace["burners"] if b.get("inefficient"))
     nodes = [
         {
             "id": "feed",
-            "name": "خوراک",
+            "name": "گاز طبیعی",
+            "subtitle": "از پالایشگاه پارس جنوبی",
             "light": "grey",
             "note": "سنسور دبی خوراک به تاریخ‌نگار وصل نیست",
             "kpis": [],
         },
         {
-            "id": "reformer",
-            "name": "کوره ریفورمر",
-            "light": reformer_light,
-            "note": "دمای دیواره زنده هر لوله",
+            "id": "compress",
+            "name": "فشرده‌سازی گاز",
+            "group": "pretreat",
+            "light": "grey",
+            "note": "بدون قرائت زنده",
+            "kpis": [],
+        },
+        {
+            "id": "hds",
+            "name": "هیدروژن‌زدایی و گوگردزدایی",
+            "group": "pretreat",
+            "light": "grey",
+            "note": "بدون قرائت زنده",
+            "kpis": [],
+        },
+        {
+            "id": "saturator",
+            "name": "اشباع‌سازی با بخار",
+            "group": "pretreat",
+            "light": "green",
+            "note": "نسبت بخار به کربنِ مدل، نه سنسور میدانی",
+            "kpis": [{"label": "S/C", "value": cat["sc_avg"], "unit": ""}],
+        },
+        {
+            "id": "primary",
+            "name": "ریفرمر اولیه",
+            "subtitle": "لوله‌های کاتالیستی نیکل، گرمایش خارجی با مشعل",
+            "reaction": "CH₄ + H₂O → CO + 3H₂",
+            "light": primary_light,
+            "note": "خروجی: گاز تبدیل‌شده با دمای بالا",
             "kpis": [
                 {"label": "میانگین دما", "value": round(mean_t, 1) if readings else None, "unit": "°C"},
                 {"label": "لوله‌ها", "value": n_tubes, "unit": ""},
                 {"label": "نقاط داغ", "value": len(hotspots), "unit": ""},
+                {"label": "فعالیت کاتالیست", "value": None if cat["activity"] is None else round(cat["activity"] * 100, 1), "unit": "%"},
+                {"label": "مشعل ناکارآمد", "value": inefficient, "unit": ""},
             ],
             "tubes": tube_nodes,
-        },
-        {
-            "id": "burners",
-            "name": "مشعل‌ها",
-            "light": burner_light,
-            "note": "آخرین قرائت هر مشعل",
-            "kpis": [
-                {"label": "تعداد", "value": furnace["n"], "unit": ""},
-                {"label": "ناکارآمد", "value": inefficient, "unit": ""},
-            ],
             "burners": [
                 {"burner_id": b["burner_id"], "intensity": b.get("intensity"), "light": b["light"]}
                 for b in furnace["burners"]
             ],
         },
         {
-            "id": "catalyst",
-            "name": "بستر کاتالیست",
-            "light": cat["light"],
-            "note": "فعالیت پیش‌بینی‌شده مدل ماژول ۴",
-            "kpis": [
-                {"label": "فعالیت", "value": None if cat["activity"] is None else round(cat["activity"] * 100, 1), "unit": "%"},
-                {"label": "افت فشار", "value": cat["dp_bar"], "unit": "bar"},
-                {"label": "سن", "value": cat["age_h"], "unit": "h"},
-            ],
+            "id": "secondary",
+            "name": "ریفرمر ثانویه / اتوترمال",
+            "subtitle": "اکسیژن از واحد جداسازی هوا",
+            "light": "grey",
+            "note": "آنالایزر گاز سنتز وصل نیست",
+            "kpis": [],
         },
         {
-            "id": "syngas",
-            "name": "گاز سنتز",
+            "id": "synthesis",
+            "name": "فشرده‌سازی و سنتز متانول",
+            "subtitle": "حلقه سنتز",
             "light": "grey",
-            "note": "آنالایزر ترکیب خروجی وصل نیست",
+            "note": "دبی محصول به توزین وصل نیست",
             "kpis": [],
         },
     ]
@@ -595,6 +613,306 @@ def _reconciliation(db_path: str) -> dict:
         "n_warn": sum(1 for c in checks if c["status"] == "warn"),
         "n_fail": sum(1 for c in checks if c["status"] == "fail"),
         "checks": checks,
+    }
+
+
+# Stoichiometric CO2 from methane: 44/16 × 0.717 kg/Nm³.
+_KG_CO2_PER_NM3_CH4 = 1.972
+_FURNACE_FEED_NM3H = 32000.0
+_FURNACE_FUEL_BASE_NM3H = 11500.0
+_FURNACE_SC = 3.2
+# Ideal CH4 → CH3OH: 32 kg methanol per 22.414 Nm³ methane.
+_KG_METHANOL_PER_NM3 = 32.0 / 22.414
+# Methane lower heating value used to turn Nm³ into GJ.
+_LHV_GJ_PER_NM3 = 0.0358
+# Johnson Matthey / AFPM: about 1,700°F (927°C) for a 100,000 h tube life.
+_TWT_DESIGN_C = 927.0
+_TWT_WATCH_C = 912.0
+_carbon_opt_cache: dict = {}
+
+
+def _cached_furnace_opt(db_path: str, current: dict) -> dict | None:
+    """Run Module 3 on a coarse grid and reuse the result for a short window."""
+    key = (
+        db_path,
+        round(float(current["t_out_c"]), 0),
+        round(float(current["cat_age"]), 2),
+        round(float(current["fuel_flow_nm3h"]), 0),
+    )
+    now = time.time()
+    hit = _carbon_opt_cache.get(key)
+    if hit and now - hit[0] < 20:
+        return hit[1]
+    model = _get_model("module3_optimization.joblib")
+    if model is None:
+        result = None
+    else:
+        try:
+            result = model.optimize(current, alpha_eff=0.7, alpha_fuel=0.3, n_grid=12)
+        except Exception:
+            logger.exception("furnace carbon optimization failed")
+            result = None
+    if len(_carbon_opt_cache) > 6:
+        _carbon_opt_cache.clear()
+    _carbon_opt_cache[key] = (now, result)
+    return result
+
+
+def _carbon_view(db_path: str) -> dict:
+    """Fuel and CO2 from live burner flow, plus the furnace optimum."""
+    with dbm.get_conn(db_path) as conn:
+        furnace = _furnace_burners(conn)
+        hist_rows = conn.execute(
+            """
+            SELECT ts_minute, SUM(fuel_flow) AS fuel_nm3h
+            FROM burner_status
+            GROUP BY ts_minute
+            ORDER BY ts_minute DESC
+            LIMIT 36
+            """
+        ).fetchall()
+    history = []
+    for row in reversed(hist_rows):
+        fuel = float(row["fuel_nm3h"] or 0)
+        history.append({
+            "ts_minute": int(row["ts_minute"]),
+            "fuel_nm3h": round(fuel, 1),
+            "co2_kg_h": round(fuel * _KG_CO2_PER_NM3_CH4, 1),
+        })
+    burners = furnace["burners"]
+    healthy = sorted(
+        float(b["fuel_flow"]) for b in burners
+        if not b.get("inefficient") and b.get("fuel_flow") is not None
+    )
+    reference = healthy[len(healthy) // 2] if healthy else None
+    measured = 0.0
+    excess = 0.0
+    shares = []
+    for burner in burners:
+        fuel = float(burner.get("fuel_flow") or 0)
+        measured += fuel
+        extra = 0.0
+        if reference is not None and burner.get("inefficient"):
+            extra = max(0.0, fuel - reference)
+        excess += extra
+        shares.append({
+            "burner_id": burner["burner_id"],
+            "fuel_nm3h": round(fuel, 1),
+            "co2_kg_h": round(fuel * _KG_CO2_PER_NM3_CH4, 1),
+            "excess_fuel_nm3h": round(extra, 1),
+            "light": burner.get("light", "green"),
+        })
+    t_out = min(950.0, max(820.0, float(furnace["mean_wall_temp_c"] or 880.0)))
+    cat_age = min(1.0, float(furnace["catalyst"]["age_h"]) / 30000.0)
+    current = {
+        "sc_ratio": _FURNACE_SC,
+        "t_out_c": round(t_out, 1),
+        "feed_flow_nm3h": _FURNACE_FEED_NM3H,
+        "cat_age": round(cat_age, 3),
+        "fuel_flow_nm3h": _FURNACE_FUEL_BASE_NM3H,
+    }
+    opt = _cached_furnace_opt(db_path, current) or {}
+    opt_fuel = opt.get("fuel_pred_nm3h")
+    current_eff = None
+    current_coke = None
+    model = _get_model("module3_optimization.joblib")
+    if model is not None:
+        try:
+            feat = pd.DataFrame([current])
+            current_eff = float(model.predict_efficiency(feat)[0])
+            current_coke = float(model.predict_coking_risk(feat)[0])
+        except Exception:
+            logger.exception("current furnace efficiency prediction failed")
+    opt_eff = opt.get("efficiency_pred")
+    methanol_now = None if current_eff is None else (
+        _FURNACE_FEED_NM3H * (_KG_METHANOL_PER_NM3 / 1000.0) * current_eff
+    )
+    methanol_opt = None if opt_eff is None else (
+        _FURNACE_FEED_NM3H * (_KG_METHANOL_PER_NM3 / 1000.0) * float(opt_eff)
+    )
+
+    def _sec(fuel_nm3h: float, methanol_t_h: float | None) -> float | None:
+        if not methanol_t_h:
+            return None
+        return (_FURNACE_FEED_NM3H + fuel_nm3h) * _LHV_GJ_PER_NM3 / methanol_t_h
+
+    sec_now = _sec(_FURNACE_FUEL_BASE_NM3H, methanol_now)
+    sec_opt = None if opt_fuel is None else _sec(float(opt_fuel), methanol_opt)
+    base_co2 = _FURNACE_FUEL_BASE_NM3H * _KG_CO2_PER_NM3_CH4
+    opt_co2 = None if opt_fuel is None else float(opt_fuel) * _KG_CO2_PER_NM3_CH4
+    intensity_now = None if not methanol_now else (base_co2 / 1000.0) / methanol_now
+    intensity_opt = None if opt_co2 is None or not methanol_opt else (opt_co2 / 1000.0) / methanol_opt
+    co2_measured = measured * _KG_CO2_PER_NM3_CH4
+    avoidable = excess * _KG_CO2_PER_NM3_CH4
+    if avoidable > 50:
+        light = "orange"
+    elif opt.get("coking_risk_pred", 0) > 0.5:
+        light = "red"
+    else:
+        light = "green"
+    return {
+        "emission_factor_kg_per_nm3": _KG_CO2_PER_NM3_CH4,
+        "light": light,
+        "burner_fuel_nm3h": round(measured, 1),
+        "combustion_co2_kg_h": round(co2_measured, 1),
+        "avoidable_fuel_nm3h": round(excess, 1),
+        "avoidable_co2_kg_h": round(avoidable, 1),
+        "healthy_fuel_nm3h": None if reference is None else round(reference, 1),
+        "inefficient_burners": sum(1 for b in burners if b.get("inefficient")),
+        "combustion_quality": None if not burners else round(1 - sum(1 for b in burners if b.get("inefficient")) / len(burners), 3),
+        "burners": shares,
+        "history": history,
+        "furnace": {
+            "baseline_fuel_nm3h": _FURNACE_FUEL_BASE_NM3H,
+            "baseline_co2_kg_h": round(base_co2, 1),
+            "feed_nm3h": _FURNACE_FEED_NM3H,
+            "sc_ratio": current["sc_ratio"],
+            "t_out_c": current["t_out_c"],
+            "cat_age": current["cat_age"],
+            "fuel_opt_nm3h": None if opt_fuel is None else round(float(opt_fuel), 1),
+            "co2_opt_kg_h": None if opt_co2 is None else round(opt_co2, 1),
+            "co2_saving_kg_h": None if opt_co2 is None else round(base_co2 - opt_co2, 1),
+            "fuel_saving_pct": None if opt.get("fuel_saving_pct") is None else round(float(opt["fuel_saving_pct"]), 2),
+            "efficiency_pred": None if opt.get("efficiency_pred") is None else round(float(opt["efficiency_pred"]), 4),
+            "coking_risk_pred": None if opt.get("coking_risk_pred") is None else round(float(opt["coking_risk_pred"]), 4),
+            "sc_ratio_opt": opt.get("sc_ratio_opt"),
+            "t_out_c_opt": None if opt.get("t_out_c_opt") is None else round(float(opt["t_out_c_opt"]), 1),
+            "carbon_intensity_kg_per_1000nm3": round(base_co2 / _FURNACE_FEED_NM3H * 1000, 2),
+            "carbon_intensity_opt_kg_per_1000nm3": None if opt_co2 is None else round(opt_co2 / _FURNACE_FEED_NM3H * 1000, 2),
+            "efficiency_now": None if current_eff is None else round(current_eff, 4),
+            "coking_risk_now": None if current_coke is None else round(current_coke, 4),
+            "methanol_t_h": None if methanol_now is None else round(methanol_now, 2),
+            "methanol_opt_t_h": None if methanol_opt is None else round(methanol_opt, 2),
+            "sec_gj_per_t": None if sec_now is None else round(sec_now, 2),
+            "sec_opt_gj_per_t": None if sec_opt is None else round(sec_opt, 2),
+            "co2_t_per_t": None if intensity_now is None else round(intensity_now, 3),
+            "co2_opt_t_per_t": None if intensity_opt is None else round(intensity_opt, 3),
+            "lhv_gj_per_nm3": _LHV_GJ_PER_NM3,
+        },
+    }
+
+
+def _bench_item(item_id: str, name: str, source: str, status: str,
+                measured, reference, unit: str, gap) -> dict:
+    return {
+        "id": item_id,
+        "name": name,
+        "source": source,
+        "status": status,
+        "measured": None if measured is None else round(float(measured), 3),
+        "reference": reference,
+        "unit": unit,
+        "gap": None if gap is None else round(float(gap), 3),
+    }
+
+
+def _benchmark_view(db_path: str) -> dict:
+    """Compare the live furnace with published methanol and reformer practice."""
+    carbon = _carbon_view(db_path)
+    furnace = carbon["furnace"]
+    with dbm.get_conn(db_path) as conn:
+        readings = dbm.get_temperature_map(conn)
+    temps = [float(r["wall_temp_c"]) for r in readings]
+    max_t = max(temps) if temps else None
+    mean_t = sum(temps) / len(temps) if temps else None
+    spread = None if max_t is None else max_t - mean_t
+    above_design = sum(1 for t in temps if t > _TWT_DESIGN_C)
+    if max_t is None:
+        twt_status = "fail"
+    elif max_t > _TWT_DESIGN_C:
+        twt_status = "fail"
+    elif max_t > _TWT_WATCH_C:
+        twt_status = "warn"
+    else:
+        twt_status = "pass"
+    if spread is None:
+        balance_status = "fail"
+    elif spread > 50:
+        balance_status = "fail"
+    elif spread > 30:
+        balance_status = "warn"
+    else:
+        balance_status = "pass"
+    intensity = furnace.get("co2_t_per_t")
+    if intensity is None:
+        co2_status = "fail"
+    elif intensity > 0.67:
+        co2_status = "fail"
+    elif intensity > 0.497:
+        co2_status = "warn"
+    else:
+        co2_status = "pass"
+    sec = furnace.get("sec_gj_per_t")
+    if sec is None:
+        sec_status = "fail"
+    elif sec > 36:
+        sec_status = "fail"
+    elif sec > 30:
+        sec_status = "warn"
+    else:
+        sec_status = "pass"
+    coke = furnace.get("coking_risk_now")
+    coke_status = "fail" if coke is None or coke > 0.5 else "pass"
+    checks = [
+        _bench_item(
+            "twt_design", "حداکثر دمای دیواره در برابر عمر ۱۰۰٬۰۰۰ ساعت",
+            "Johnson Matthey / AFPM: حدود ۹۲۷°C برای عمر طراحی ۱۰۰٬۰۰۰ ساعت",
+            twt_status, max_t, _TWT_DESIGN_C, "°C",
+            None if max_t is None else max_t - _TWT_DESIGN_C,
+        ),
+        _bench_item(
+            "temp_balance", "فاصله گرم‌ترین لوله از میانگین",
+            "نقطه داغ MRTO بالای ۳۰°C؛ اختلاف بزرگ‌تر از ۵۰°C خارج از توازن کوره است",
+            balance_status, spread, 30.0, "°C",
+            None if spread is None else spread - 30.0,
+        ),
+        _bench_item(
+            "co2_intensity", "شدت CO₂ کوره به ازای تن متانول",
+            "IPCC 2006، جدول ۳.۱۲: ۰٫۴۹۷ تن CO₂ بر تن برای ریفرمینگ بخار با ریفرمر اولیه و خوراک گاز طبیعی",
+            co2_status, intensity, 0.497, "t/t",
+            None if intensity is None else intensity - 0.497,
+        ),
+        _bench_item(
+            "specific_energy", "انرژی گاز طبیعی به ازای تن متانول",
+            "نمونه معمول حدود ۳۰ GJ/t و نزدیک بهترین فناوری حدود ۲۰ GJ/t؛ جانسون متی برای SMR حدود ۳۲٫۶ GJ/t",
+            sec_status, sec, 30.0, "GJ/t",
+            None if sec is None else sec - 30.0,
+        ),
+        _bench_item(
+            "coking", "ریسک رسوب کربن در نقطه کار فعلی",
+            "قید مدل ماژول ۳ و رویه بهره‌برداری: ریسک کک زیر ۰٫۵",
+            coke_status, coke, 0.5, "",
+            None if coke is None else coke - 0.5,
+        ),
+    ]
+    weight = {"pass": 1.0, "warn": 0.5, "fail": 0.0}
+    score = round(sum(weight[c["status"]] for c in checks) / len(checks), 3)
+    return {
+        "score": score,
+        "n_pass": sum(1 for c in checks if c["status"] == "pass"),
+        "n_warn": sum(1 for c in checks if c["status"] == "warn"),
+        "n_fail": sum(1 for c in checks if c["status"] == "fail"),
+        "tubes_above_design": above_design,
+        "max_wall_c": None if max_t is None else round(max_t, 1),
+        "checks": checks,
+        "energy_chart": [
+            {"label": "نقطه کار", "value": furnace.get("sec_gj_per_t"), "role": "measured"},
+            {"label": "نقطه بهینه", "value": furnace.get("sec_opt_gj_per_t"), "role": "optimum"},
+            {"label": "جانسون متی SMR", "value": 32.6, "role": "reference"},
+            {"label": "نمونه معمول", "value": 30.0, "role": "reference"},
+            {"label": "نزدیک BAT", "value": 20.0, "role": "reference"},
+        ],
+        "carbon_chart": [
+            {"label": "نقطه کار", "value": furnace.get("co2_t_per_t"), "role": "measured"},
+            {"label": "نقطه بهینه", "value": furnace.get("co2_opt_t_per_t"), "role": "optimum"},
+            {"label": "IPCC ریفرمر اولیه", "value": 0.497, "role": "reference"},
+            {"label": "IPCC بدون ریفرمر اولیه", "value": 0.67, "role": "reference"},
+        ],
+        "notes": [
+            "تولید متانول از خوراک طراحی ۳۲٬۰۰۰ Nm³/h و بازده مدل، با فرض تبدیل ایده‌آل متان به متانول، برآورد شده است.",
+            "انرژی شامل خوراک طراحی به‌اضافه سوخت کوره است و دبی زنده نازل‌ها را دوباره جمع نمی‌کند.",
+            "شدت CO₂ فقط CO₂ احتراقی سوخت کوره است و با ضریب کل IPCC هم‌مرز نیست.",
+        ],
     }
 
 
@@ -1152,6 +1470,16 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
         result = model.optimize(current, alpha_eff=req.alpha_eff, alpha_fuel=req.alpha_fuel)
         return result
+
+    @app.get("/api/v1/carbon")
+    def carbon(_user: dict = Depends(current_user)) -> dict:
+        """Live burner CO2 plus furnace fuel and carbon intensity at the Module 3 optimum."""
+        return _carbon_view(app.state.db_path)
+
+    @app.get("/api/v1/benchmark")
+    def benchmark(_user: dict = Depends(current_user)) -> dict:
+        """Score the live furnace against published reformer, energy, and CO2 practice."""
+        return _benchmark_view(app.state.db_path)
 
     @app.get("/api/v1/burners")
     def burners(_user: dict = Depends(current_user)) -> dict:

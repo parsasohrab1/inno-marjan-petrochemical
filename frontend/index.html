@@ -101,6 +101,25 @@
   .twin-cell.red, .twin-dot.red { background: var(--danger); }
   .twin-cell.orange, .twin-dot.orange { background: var(--warn); }
   .twin-cell.green, .twin-dot.green { background: var(--ok); }
+  .pfd { display: flex; flex-direction: column; align-items: stretch; gap: 0; max-width: 980px; margin: 8px auto 0; }
+  .pfd-stage { border: 1px solid var(--accent-2); border-radius: 16px; padding: 14px 16px; background: linear-gradient(180deg, rgba(55,220,242,0.06), transparent 42%), var(--panel-2); }
+  .pfd-stage.red { border-color: var(--danger); }
+  .pfd-stage.orange { border-color: var(--warn); }
+  .pfd-stage.green { border-color: var(--ok); }
+  .pfd-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+  .pfd-kicker { color: var(--accent); font-size: 0.75rem; letter-spacing: 0.02em; }
+  .pfd-stage h3 { margin: 2px 0 4px; font-size: 1.05rem; }
+  .pfd-sub, .pfd-note { color: var(--text-soft); font-size: 0.8rem; margin: 0; }
+  .pfd-reaction { display: inline-block; margin-top: 8px; padding: 4px 10px; border-radius: 999px; background: rgba(55,220,242,0.12); color: var(--accent); font-size: 0.82rem; }
+  .pfd-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin-top: 10px; }
+  .pfd-unit { flex: 1 1 160px; background: rgba(11,28,44,0.45); border-radius: 12px; padding: 10px; border: 1px solid rgba(55,220,242,0.18); }
+  .pfd-unit h4 { margin: 0 0 4px; font-size: 0.88rem; }
+  .pfd-arrow { align-self: center; color: var(--accent); font-size: 1.15rem; padding: 0 2px; }
+  .pfd-down { display: flex; flex-direction: column; align-items: center; color: var(--accent); line-height: 1; padding: 4px 0; }
+  .pfd-down span { font-size: 0.75rem; color: var(--text-soft); }
+  .pfd-down b { font-size: 1.15rem; font-weight: 400; }
+  .pfd-split { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; }
+  .pfd-split .label { color: var(--text-soft); font-size: 0.75rem; margin-bottom: 6px; }
   .recon-row { display: grid; grid-template-columns: minmax(140px, 1.4fr) 2fr auto; gap: 10px; align-items: center; margin: 8px 0; }
   .recon-track { height: 12px; background: #243246; border-radius: 6px; overflow: hidden; }
   .recon-fill { height: 100%; border-radius: 6px; }
@@ -268,6 +287,8 @@
     <div class="tab" data-tab="temperature">۱. پایش دما</div>
     <div class="tab" data-tab="rul">۲. عمر باقیمانده</div>
     <div class="tab" data-tab="optim">۳. بهینه‌سازی S/C</div>
+    <div class="tab" data-tab="carbon">کربن و سوخت</div>
+    <div class="tab" data-tab="benchmark">بنچمارک</div>
     <div class="tab" data-tab="burners">۴. مشعل و کاتالیست</div>
     <div class="tab" data-tab="maintenance">نگهداری پیشگیرانه</div>
     <div class="tab" data-tab="twin">دوقلوی دیجیتال</div>
@@ -286,7 +307,9 @@
         <div class="card warn" id="ov-hot-card"><div class="label">نقاط داغ فعال</div><div class="value" id="ov-hotspots">—</div><div class="delta">Δ > 30 °C</div></div>
         <div class="card danger" id="ov-alert-card"><div class="label">هشدارهای باز</div><div class="value" id="ov-alerts">—</div><div class="delta">نیازمند اقدام</div></div>
         <div class="card ok"><div class="label">بازده تبدیل پیش‌بینی</div><div class="value" id="ov-eff">—</div><div class="delta">از ماژول ۳</div></div>
-        <div class="card" id="ov-fuel-card"><div class="label">صرفه‌جویی سوخت تخمینی</div><div class="value" id="ov-fuel">—</div><div class="delta">نسبت به خط پایه</div></div>
+        <div class="card" id="ov-fuel-card"><div class="label">صرفه‌جویی سوخت کوره</div><div class="value" id="ov-fuel">—</div><div class="delta">نسبت به خط پایه ۱۱٬۵۰۰</div></div>
+        <div class="card" id="ov-co2-card"><div class="label">CO₂ احتراقی مشعل</div><div class="value" id="ov-co2">—</div><div class="delta" id="ov-co2-delta">کیلوگرم در ساعت، از دبی زنده</div></div>
+        <div class="card" id="ov-bench-card"><div class="label">امتیاز بنچمارک</div><div class="value" id="ov-bench">—</div><div class="delta">در برابر نمونه‌های بین‌المللی</div></div>
       </div>
       <div class="scroll-wrap" style="margin-top:14px;">
         <table class="data" id="ov-table">
@@ -302,6 +325,7 @@
     <div class="panel">
       <h2>ماژول ۱ — نقشه توزیع دما و شناسایی نقاط داغ</h2>
       <p style="color:var(--text-soft); font-size:0.88rem;">هر سلول یک لوله از کوره را نشان می‌دهد. رنگ بر اساس دمای دیواره است. نشان‌دهنده نقاط داغ (قرمز)، گرم (نارنجی)، خنک (آبی روشن) و سرد (آبی تیره).</p>
+      <p id="tmt-benchmark" style="color:var(--text-soft); font-size:0.85rem;"></p>
       <div class="legend">
         <span><i style="background:#FF5A6E"></i> داغ (&gt; ۹۳۰ °C)</span>
         <span><i style="background:#FFB454"></i> گرم (۸۸۰–۹۳۰)</span>
@@ -354,6 +378,43 @@
     </div>
   </div>
 
+  <!-- Carbon and fuel -->
+  <div class="tab-content" data-content="carbon">
+    <div class="panel">
+      <h2>مدیریت کربن و بهینه‌سازی سوخت</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">CO₂ احتراقی با ضریب ۱٫۹۷۲ کیلوگرم به ازای هر نرمال‌مترمکعب متان حساب می‌شود. دبی مشعل‌ها اندازه‌گیری زنده است. سوخت کوره مقیاس مدل ماژول ۳ است و با جمع نازل‌ها یکی نیست.</p>
+      <div class="grid-cards" id="carbon-cards"></div>
+      <h3 class="section-title">روند CO₂ مشعل‌ها</h3>
+      <div class="bars" id="carbon-history"></div>
+      <h3 class="section-title">خط پایه کوره در برابر نقطه بهینه</h3>
+      <div class="bars" id="carbon-compare"></div>
+      <p id="carbon-note" style="color:var(--text-soft); font-size:0.85rem; margin-top:10px;"></p>
+      <h3 class="section-title">سهم هر مشعل</h3>
+      <div class="scroll-wrap">
+        <table class="data" id="carbon-table">
+          <thead><tr><th>مشعل</th><th>چراغ</th><th>سوخت (Nm³/h)</th><th>CO₂ (kg/h)</th><th>سوخت اضافه (Nm³/h)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- International benchmark -->
+  <div class="tab-content" data-content="benchmark">
+    <div class="panel">
+      <h2>بنچمارک با نمونه‌های بین‌المللی</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">نقطه کار زنده با دمای طراحی لوله، شدت CO₂ متانول و انرژی ویژه گاز طبیعی مقایسه می‌شود. خوراک، نرخ طراحی است نه توزین محصول.</p>
+      <div class="grid-cards" id="bench-cards"></div>
+      <h3 class="section-title">انرژی ویژه (GJ به ازای تن متانول)</h3>
+      <div class="bars" id="bench-energy"></div>
+      <h3 class="section-title">شدت CO₂ (تن به ازای تن متانول)</h3>
+      <div class="bars" id="bench-carbon"></div>
+      <h3 class="section-title">نتیجه هر معیار</h3>
+      <div id="bench-checks"></div>
+      <div id="bench-notes" style="color:var(--text-soft); font-size:0.82rem; margin-top:12px;"></div>
+    </div>
+  </div>
+
   <!-- Module 4 -->
   <div class="tab-content" data-content="burners">
     <div class="panel">
@@ -393,9 +454,9 @@
   <!-- Digital twin -->
   <div class="tab-content" data-content="twin">
     <div class="panel">
-      <h2>دوقلوی دیجیتال خط تولید</h2>
-      <p style="color:var(--text-soft); font-size:0.88rem;">جریان خط از خوراک تا گاز سنتز. گره‌هایی که سنسور زنده ندارند خاکستری می‌مانند. اختلاف هر گره با مدل نامی پایین صفحه است.</p>
-      <div class="twin-flow" id="twin-flow"></div>
+      <h2>دوقلوی دیجیتال خط تولید متانول</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">جریان از گاز پارس جنوبی تا حلقه سنتز. فقط ریفرمر اولیه دمای لوله، مشعل و فعالیت کاتالیست زنده دارد. بقیه واحدها تا وصل شدن سنسور خاکستری می‌مانند.</p>
+      <div class="pfd" id="twin-flow"></div>
       <h3 class="section-title">اختلاف مقدار زنده با مدل</h3>
       <div id="twin-residuals"></div>
     </div>
@@ -573,7 +634,7 @@ function hideLogin() {
   $('#login-overlay').classList.add('hidden');
   updateBadge();
   // Reload all data after a successful login.
-  loadOverview(); loadRUL(); loadBurners(); loadMaintenance(); loadTwin(); loadReconciliation(); loadAlerts(); loadMetrics();
+  loadOverview(); loadRUL(); loadBurners(); loadCarbon(); loadBenchmark(); loadMaintenance(); loadTwin(); loadReconciliation(); loadAlerts(); loadMetrics();
 }
 function updateBadge() {
   if (!AUTH.access) { $('#user-badge').style.display = 'none'; return; }
@@ -1001,32 +1062,72 @@ function twinKpis(kpis) {
     );
   });
 }
+function pfdDown(caption) {
+  return el('div', { class: 'pfd-down' }, el('b', {}, '▼'), caption ? el('span', {}, caption) : null);
+}
+function pfdStage(node, kids) {
+  return el('section', { class: 'pfd-stage ' + (node.light || '') },
+    el('div', { class: 'pfd-head' },
+      el('div', {},
+        el('h3', {}, node.name || ''),
+        node.subtitle ? el('p', { class: 'pfd-sub' }, node.subtitle) : null,
+      ),
+      trafficLights(node.light),
+    ),
+    node.reaction ? el('div', { class: 'pfd-reaction' }, node.reaction) : null,
+    ...(kids || []),
+    node.note ? el('p', { class: 'pfd-note' }, node.note) : null,
+  );
+}
 async function loadTwin() {
   try {
     const twin = await getJSON('/api/v1/digital-twin');
     const flow = $('#twin-flow');
-    const nodes = twin.nodes || [];
-    const kids = [];
-    nodes.forEach((node, i) => {
-      if (i) kids.push(el('div', { class: 'twin-arrow' }, '←'));
-      const body = [
-        el('h3', {}, node.name),
-        trafficLights(node.light),
-        el('p', { class: 'note' }, node.note || ''),
-        ...twinKpis(node.kpis),
-      ];
-      if (node.tubes && node.tubes.length) {
-        body.push(el('div', { class: 'twin-grid' }, node.tubes.map(t =>
-          el('div', { class: 'twin-cell ' + t.light, title: `${t.tube_id}: ${Number(t.wall_temp_c).toFixed(1)}°C` }),
-        )));
-      }
-      if (node.burners && node.burners.length) {
-        body.push(el('div', { class: 'twin-dots' }, node.burners.map(b =>
-          el('div', { class: 'twin-dot ' + b.light, title: b.burner_id }),
-        )));
-      }
-      kids.push(el('div', { class: 'twin-node ' + (node.light || '') }, body));
+    const byId = {};
+    (twin.nodes || []).forEach(n => { byId[n.id] = n; });
+    const feed = byId.feed || { name: 'گاز طبیعی', light: 'grey' };
+    const steps = ['compress', 'hds', 'saturator'].map(id => byId[id]).filter(Boolean);
+    const primary = byId.primary || { name: 'ریفرمر اولیه', light: 'grey', kpis: [] };
+    const secondary = byId.secondary || { name: 'ریفرمر ثانویه', light: 'grey' };
+    const synthesis = byId.synthesis || { name: 'سنتز متانول', light: 'grey' };
+    const pretreatUnits = [];
+    steps.forEach((step, i) => {
+      if (i) pretreatUnits.push(el('div', { class: 'pfd-arrow' }, '←'));
+      pretreatUnits.push(el('div', { class: 'pfd-unit' },
+        el('h4', {}, step.name),
+        el('p', { class: 'pfd-note' }, step.note || ''),
+        ...twinKpis(step.kpis),
+      ));
     });
+    const kids = [
+      pfdStage(feed),
+      pfdDown('خوراک'),
+      pfdStage({ name: 'پیش‌تصفیه خوراک', light: 'grey', note: 'گاز طبیعی و بخار به ریفرمر اولیه می‌روند' }, [
+        el('div', { class: 'pfd-row' }, pretreatUnits),
+      ]),
+      pfdDown('مخلوط گاز طبیعی + بخار'),
+      pfdStage(primary, [
+        el('div', {}, ...twinKpis(primary.kpis)),
+        el('div', { class: 'pfd-split' },
+          el('div', {},
+            el('div', { class: 'label' }, 'لوله‌های کاتالیستی'),
+            el('div', { class: 'twin-grid' }, (primary.tubes || []).map(t =>
+              el('div', { class: 'twin-cell ' + t.light, title: `${t.tube_id}: ${Number(t.wall_temp_c).toFixed(1)}°C` }),
+            )),
+          ),
+          el('div', {},
+            el('div', { class: 'label' }, 'مشعل‌های گرمایش خارجی'),
+            el('div', { class: 'twin-dots' }, (primary.burners || []).map(b =>
+              el('div', { class: 'twin-dot ' + b.light, title: b.burner_id }),
+            )),
+          ),
+        ),
+      ]),
+      pfdDown('گاز تبدیل‌شده'),
+      pfdStage(secondary),
+      pfdDown('گاز سنتز'),
+      pfdStage(synthesis),
+    ];
     if (flow) render(flow, kids);
     const box = $('#twin-residuals');
     if (box) {
@@ -1088,9 +1189,162 @@ async function loadReconciliation() {
     }
   } catch (e) { console.error(e); }
 }
+function tonne(kg) {
+  if (kg == null || Number.isNaN(Number(kg))) return '—';
+  return (Number(kg) / 1000).toLocaleString('fa-IR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' t/h';
+}
+async function loadCarbon() {
+  try {
+    const c = await getJSON('/api/v1/carbon');
+    const furnace = c.furnace || {};
+    const saving = furnace.fuel_saving_pct;
+    if ($('#ov-fuel') && saving != null) {
+      $('#ov-fuel').textContent = Number(saving).toFixed(1) + '%';
+      $('#ov-fuel').style.color = saving >= 0 ? 'var(--ok)' : 'var(--warn)';
+    }
+    if ($('#ov-eff') && furnace.efficiency_pred != null) {
+      $('#ov-eff').textContent = (furnace.efficiency_pred * 100).toFixed(1) + '%';
+    }
+    if ($('#ov-co2')) {
+      $('#ov-co2').textContent = tonne(c.combustion_co2_kg_h);
+    }
+    const avoid = c.avoidable_co2_kg_h || 0;
+    const cards = $('#carbon-cards');
+    if (cards) {
+      render(cards, [
+        el('div', { class: 'card ' + (c.light === 'green' ? 'ok' : c.light === 'red' ? 'danger' : 'warn') },
+          el('div', { class: 'label' }, 'CO₂ مشعل‌ها'),
+          el('div', { class: 'value' }, tonne(c.combustion_co2_kg_h)),
+          el('div', { class: 'delta' }, faNum(c.burner_fuel_nm3h, 0) + ' Nm³/h سوخت'),
+        ),
+        el('div', { class: 'card ' + (avoid > 0 ? 'warn' : 'ok') },
+          el('div', { class: 'label' }, 'CO₂ قابل کاهش مشعل'),
+          el('div', { class: 'value' }, tonne(c.avoidable_co2_kg_h)),
+          el('div', { class: 'delta' }, 'مازاد نسبت به میانه مشعل سالم'),
+        ),
+        el('div', { class: 'card' },
+          el('div', { class: 'label' }, 'کیفیت احتراق'),
+          el('div', { class: 'value' }, c.combustion_quality == null ? '—' : Math.round(c.combustion_quality * 100) + '٪'),
+          el('div', { class: 'delta' }, String(c.inefficient_burners || 0) + ' مشعل ناکارآمد'),
+        ),
+        el('div', { class: 'card ' + ((furnace.co2_saving_kg_h || 0) > 0 ? 'ok' : 'warn') },
+          el('div', { class: 'label' }, 'کاهش CO₂ کوره در نقطه بهینه'),
+          el('div', { class: 'value' }, tonne(furnace.co2_saving_kg_h)),
+          el('div', { class: 'delta' }, saving == null ? 'مدل در دسترس نیست' : 'تغییر سوخت ' + Number(saving).toFixed(1) + '٪'),
+        ),
+        el('div', { class: 'card' },
+          el('div', { class: 'label' }, 'شدت کربن خط پایه'),
+          el('div', { class: 'value' }, faNum(furnace.carbon_intensity_kg_per_1000nm3, 1)),
+          el('div', { class: 'delta' }, 'kg CO₂ / ۱۰۰۰ Nm³ خوراک'),
+        ),
+        el('div', { class: 'card ok' },
+          el('div', { class: 'label' }, 'شدت کربن بهینه'),
+          el('div', { class: 'value' }, faNum(furnace.carbon_intensity_opt_kg_per_1000nm3, 1)),
+          el('div', { class: 'delta' }, 'همان خوراک طراحی'),
+        ),
+      ]);
+    }
+    const hist = $('#carbon-history');
+    const series = c.history || [];
+    const maxCo2 = Math.max(1, ...series.map(s => s.co2_kg_h || 0));
+    if (hist) {
+      render(hist, series.slice(-24).map(s => el('div', { class: 'bar-col' },
+        el('div', { class: 'bar orange', title: String(s.co2_kg_h), style: { height: Math.max(6, (s.co2_kg_h / maxCo2) * 120) + 'px' } }),
+        el('div', { class: 'bar-label' }, String(s.ts_minute)),
+      )));
+    }
+    const compare = $('#carbon-compare');
+    if (compare) {
+      const pairs = [
+        ['سوخت خط پایه', furnace.baseline_fuel_nm3h, 'orange'],
+        ['سوخت بهینه', furnace.fuel_opt_nm3h, 'green'],
+        ['CO₂ خط پایه', furnace.baseline_co2_kg_h, 'orange'],
+        ['CO₂ بهینه', furnace.co2_opt_kg_h, 'green'],
+      ];
+      const maxPair = Math.max(1, ...pairs.map(p => Number(p[1]) || 0));
+      render(compare, pairs.map(([label, value, cls]) => el('div', { class: 'bar-col' },
+        el('div', { class: 'bar-n' }, value == null ? '—' : Math.round(value).toLocaleString('fa-IR')),
+        el('div', { class: 'bar ' + cls, style: { height: Math.max(6, ((Number(value) || 0) / maxPair) * 120) + 'px' } }),
+        el('div', { class: 'bar-label' }, label),
+      )));
+    }
+    const note = $('#carbon-note');
+    if (note) {
+      const sc = furnace.sc_ratio_opt == null ? '—' : Number(furnace.sc_ratio_opt).toFixed(2);
+      const tout = furnace.t_out_c_opt == null ? '—' : Number(furnace.t_out_c_opt).toFixed(1);
+      const coke = furnace.coking_risk_pred == null ? '—' : Number(furnace.coking_risk_pred).toFixed(3);
+      note.textContent = `پیشنهاد مدل: S/C برابر ${sc} و دمای خروجی ${tout} °C. ریسک رسوب کک ${coke} و باید زیر ۰٫۵ بماند.`;
+    }
+    const tbody = $('#carbon-table tbody');
+    if (tbody) {
+      render(tbody, (c.burners || []).map(b => el('tr', {},
+        el('td', {}, b.burner_id),
+        el('td', {}, trafficLights(b.light)),
+        el('td', {}, faNum(b.fuel_nm3h, 1)),
+        el('td', {}, faNum(b.co2_kg_h, 1)),
+        el('td', {}, faNum(b.excess_fuel_nm3h, 1)),
+      )));
+    }
+  } catch (e) { console.error(e); }
+}
+function benchBars(target, rows) {
+  if (!target) return;
+  const values = (rows || []).map(r => Number(r.value) || 0);
+  const maxV = Math.max(1, ...values);
+  render(target, (rows || []).map(r => el('div', { class: 'bar-col' },
+    el('div', { class: 'bar-n' }, r.value == null ? '—' : Number(r.value).toLocaleString('fa-IR', { maximumFractionDigits: 2 })),
+    el('div', { class: 'bar ' + (r.role === 'measured' ? 'orange' : r.role === 'optimum' ? 'green' : ''),
+      style: { height: Math.max(6, ((Number(r.value) || 0) / maxV) * 120) + 'px', background: r.role === 'reference' ? 'var(--accent-2)' : '' } }),
+    el('div', { class: 'bar-label' }, r.label),
+  )));
+}
+async function loadBenchmark() {
+  try {
+    const b = await getJSON('/api/v1/benchmark');
+    const scorePct = Math.round((b.score || 0) * 100);
+    const scoreCls = b.score >= 0.8 ? 'ok' : b.score >= 0.5 ? 'warn' : 'danger';
+    if ($('#ov-bench')) {
+      $('#ov-bench').textContent = scorePct + '٪';
+      $('#ov-bench').style.color = scoreCls === 'ok' ? 'var(--ok)' : scoreCls === 'warn' ? 'var(--warn)' : 'var(--danger)';
+    }
+    const tmt = $('#tmt-benchmark');
+    if (tmt) {
+      const maxT = b.max_wall_c == null ? '—' : Number(b.max_wall_c).toLocaleString('fa-IR');
+      tmt.textContent = `مرجع بین‌المللی عمر ۱۰۰٬۰۰۰ ساعت حدود ۹۲۷°C است. حداکثر دمای زنده ${maxT}°C و ${b.tubes_above_design || 0} لوله بالاتر از این حد است.`;
+    }
+    const cards = $('#bench-cards');
+    if (cards) {
+      render(cards, [
+        el('div', { class: 'card ' + scoreCls },
+          el('div', { class: 'label' }, 'امتیاز کل'),
+          el('div', { class: 'value' }, scorePct + '٪'),
+        ),
+        el('div', { class: 'card ok' }, el('div', { class: 'label' }, 'قبول'), el('div', { class: 'value' }, String(b.n_pass || 0))),
+        el('div', { class: 'card warn' }, el('div', { class: 'label' }, 'هشدار'), el('div', { class: 'value' }, String(b.n_warn || 0))),
+        el('div', { class: 'card danger' }, el('div', { class: 'label' }, 'فاصله'), el('div', { class: 'value' }, String(b.n_fail || 0))),
+      ]);
+    }
+    benchBars($('#bench-energy'), b.energy_chart);
+    benchBars($('#bench-carbon'), b.carbon_chart);
+    const box = $('#bench-checks');
+    if (box) {
+      render(box, (b.checks || []).map(c => el('div', { class: 'recon-row' },
+        el('div', {}, c.name),
+        el('div', { class: 'recon-track' },
+          el('div', { class: 'recon-fill ' + (c.status === 'pass' ? 'pass' : c.status === 'warn' ? 'warn' : 'fail'),
+            style: { width: (c.status === 'pass' ? 100 : c.status === 'warn' ? 55 : 18) + '%' } })),
+        el('div', { class: 'recon-val' }, (c.measured == null ? '—' : Number(c.measured).toLocaleString('fa-IR', { maximumFractionDigits: 2 })) + ' / ' + Number(c.reference).toLocaleString('fa-IR', { maximumFractionDigits: 3 }) + (c.unit ? ' ' + c.unit : '')),
+      )));
+    }
+    const notes = $('#bench-notes');
+    if (notes) {
+      render(notes, (b.notes || []).map(text => el('p', {}, text)));
+    }
+  } catch (e) { console.error(e); }
+}
 function refreshLive() {
   return Promise.allSettled([
-    loadOverview(), loadRUL(), loadBurners(), loadMaintenance(), loadTwin(), loadReconciliation(), loadAlerts(),
+    loadOverview(), loadRUL(), loadBurners(), loadCarbon(), loadBenchmark(), loadMaintenance(), loadTwin(), loadReconciliation(), loadAlerts(),
   ]);
 }
 refreshLive().then(() => {
