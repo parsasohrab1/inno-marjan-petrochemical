@@ -122,6 +122,482 @@ def _catalyst_status(activity: float | None) -> str:
     return "healthy"
 
 
+def _light_from_pfail(p_fail: float) -> str:
+    """Traffic light aligned with the dashboard risk bands."""
+    if p_fail > 0.5:
+        return "red"
+    if p_fail > 0.2:
+        return "orange"
+    return "green"
+
+
+def _catalyst_light(status: str) -> str:
+    if status == "replace":
+        return "red"
+    if status == "aging":
+        return "orange"
+    if status == "healthy":
+        return "green"
+    return "grey"
+
+
+def _temp_light(temp_c: float | None) -> str:
+    if temp_c is None:
+        return "grey"
+    if temp_c >= 930:
+        return "red"
+    if temp_c >= 880:
+        return "orange"
+    return "green"
+
+
+def _worst_light(lights: list[str]) -> str:
+    rank = {"red": 0, "orange": 1, "grey": 2, "green": 3}
+    if not lights:
+        return "grey"
+    return min(lights, key=lambda name: rank.get(name, 9))
+
+
+def _check_status(abs_residual: float, warn_at: float, fail_at: float) -> str:
+    if abs_residual > fail_at:
+        return "fail"
+    if abs_residual > warn_at:
+        return "warn"
+    return "pass"
+
+
+def _compute_rul(db_path: str) -> dict:
+    """RUL per tube, with a traffic light on each row."""
+    model = _get_model("module2_rul.joblib")
+    with dbm.get_conn(db_path) as conn:
+        tubes = dbm.get_tubes(conn)
+        avg_t_map = _avg_wall_temp_per_tube(conn, [t["tube_id"] for t in tubes]) if tubes else {}
+    payload: dict | None = None
+    if model is not None and tubes:
+        try:
+            df = pd.DataFrame(tubes)
+            df["avg_wall_temp_c"] = df["tube_id"].map(avg_t_map).astype(float)
+            df["consumed_life_fraction"] = (df["last_replaced_days_ago"] * 24) / df["design_life_h"]
+            rul = model.predict_rul(df)
+            pfail = model.predict_failure_prob(df)
+            payload = {
+                "source": "trained_model",
+                "tubes": [
+                    {"tube_id": tid, "rul_h": int(r), "p_fail_90d": round(float(p), 4)}
+                    for tid, r, p in zip(df["tube_id"], rul, pfail)
+                ],
+            }
+        except Exception:
+            logger.exception("rul model failed")
+            payload = None
+    if payload is None:
+        from mrto.synthetic_data import lmp_to_rupture_time
+        rows = []
+        for t in tubes:
+            avg_t = avg_t_map.get(t["tube_id"], 880.0)
+            t_rupt = lmp_to_rupture_time(avg_t)
+            elapsed = t["last_replaced_days_ago"] * 24
+            rul_h = max(0.0, t_rupt - elapsed)
+            consumed = elapsed / max(t_rupt, 1)
+            p_fail_90d = 1.0 / (1.0 + (1.0 - max(0, min(1, consumed - 0.7))) * 10)
+            rows.append({
+                "tube_id": t["tube_id"],
+                "rul_h": int(rul_h),
+                "p_fail_90d": round(p_fail_90d, 4),
+            })
+        payload = {"source": "physics_fallback", "tubes": rows}
+    for row in payload["tubes"]:
+        row["light"] = _light_from_pfail(float(row["p_fail_90d"]))
+    return payload
+
+
+def _furnace_burners(conn) -> dict:
+    """Latest burner row per burner, plus the catalyst bed the model sees."""
+    rows = conn.execute(
+        """
+        SELECT burner_id, ts_minute, fuel_flow, intensity, angle
+        FROM burner_status
+        WHERE id IN (
+            SELECT MAX(id) FROM burner_status GROUP BY burner_id
+        )
+        ORDER BY burner_id
+        """
+    ).fetchall()
+    overall_avg = conn.execute(
+        """
+        SELECT AVG(wall_temp_c) FROM temperature_readings
+        WHERE id IN (SELECT MAX(id) FROM temperature_readings GROUP BY tube_id)
+        """
+    ).fetchone()[0]
+    burners_list = [dict(r) for r in rows]
+    mean_wall = float(overall_avg) if overall_avg is not None else 880.0
+    catalyst_activity = None
+    model = _get_model("module4_burner_catalyst.joblib")
+    if model is not None:
+        try:
+            if burners_list:
+                df = pd.DataFrame(burners_list).rename(
+                    columns={"fuel_flow": "fuel_flow_nm3h", "angle": "angle_deg"}
+                )
+                df["age_h"] = 2000
+                df["avg_tube_t_c"] = mean_wall
+                df["intensity"] = df["intensity"].fillna(0.9)
+                df["fuel_flow_nm3h"] = df["fuel_flow_nm3h"].fillna(190)
+                df["angle_deg"] = df["angle_deg"].fillna(0)
+                preds = model.predict_inefficient(df)
+                for burner, pred in zip(burners_list, preds):
+                    burner["inefficient"] = int(pred)
+            activity = model.predict_activity(pd.DataFrame([{
+                "age_h": _CATALYST_BED["age_h"],
+                "t_out_avg_c": mean_wall,
+                "sc_avg": _CATALYST_BED["sc_avg"],
+                "dp_bar": _CATALYST_BED["dp_bar"],
+            }]))
+            catalyst_activity = round(float(activity[0]), 4)
+        except Exception:
+            logger.exception("burner/catalyst model failed")
+    for burner in burners_list:
+        burner["light"] = "red" if burner.get("inefficient") else "green"
+    catalyst = {
+        "activity": catalyst_activity,
+        "status": _catalyst_status(catalyst_activity),
+        "age_h": _CATALYST_BED["age_h"],
+        "sc_avg": _CATALYST_BED["sc_avg"],
+        "dp_bar": _CATALYST_BED["dp_bar"],
+        "t_out_avg_c": round(mean_wall, 2),
+        "replace_below": _CATALYST_REPLACE_BELOW,
+        "light": _catalyst_light(_catalyst_status(catalyst_activity)),
+    }
+    return {
+        "burners": burners_list,
+        "n": len(burners_list),
+        "catalyst_activity": catalyst_activity,
+        "mean_wall_temp_c": round(mean_wall, 2),
+        "catalyst": catalyst,
+    }
+
+
+def _pm_plan(kind: str, light: str) -> tuple[str, int | None, str]:
+    plans = {
+        ("tube", "red"): ("بازرسی فوری دیواره و برنامه‌ریزی تعویض", 7, "احتمال خرابی ۹۰روزه بالا است"),
+        ("tube", "orange"): ("بازرسی در توقف برنامه‌ریزی‌شده", 30, "احتمال خرابی در محدوده متوسط است"),
+        ("tube", "green"): ("بازرسی دوره‌ای", 90, "لوله در محدوده سالم است"),
+        ("burner", "red"): ("تنظیم شعله یا تعویض نازل", 3, "مدل مشعل را ناکارآمد علامت زده است"),
+        ("burner", "green"): ("بازرسی دوره‌ای شعله", 90, "مشعل در محدوده نرمال است"),
+        ("catalyst", "red"): ("برنامه‌ریزی تعویض بستر", 14, "فعالیت زیر آستانه تعویض است"),
+        ("catalyst", "orange"): ("نمونه‌گیری فعالیت و پایش افت فشار", 45, "فعالیت افت کرده ولی هنوز به تعویض نرسیده"),
+        ("catalyst", "green"): ("پایش دوره‌ای بستر", 90, "بستر در محدوده سالم است"),
+        ("catalyst", "grey"): ("داده مدل کاتالیست ناقص است", None, "پیش‌بینی فعالیت در دسترس نیست"),
+    }
+    return plans.get((kind, light), ("پایش", None, ""))
+
+
+def _maintenance_view(db_path: str) -> dict:
+    rul = _compute_rul(db_path)
+    with dbm.get_conn(db_path) as conn:
+        furnace = _furnace_burners(conn)
+    assets = []
+    for tube in rul["tubes"]:
+        action, due, reason = _pm_plan("tube", tube["light"])
+        assets.append({
+            "asset_id": tube["tube_id"],
+            "kind": "tube",
+            "light": tube["light"],
+            "action": action,
+            "due_days": due,
+            "reason": reason,
+            "rul_h": tube["rul_h"],
+            "p_fail_90d": tube["p_fail_90d"],
+        })
+    for burner in furnace["burners"]:
+        action, due, reason = _pm_plan("burner", burner["light"])
+        assets.append({
+            "asset_id": burner["burner_id"],
+            "kind": "burner",
+            "light": burner["light"],
+            "action": action,
+            "due_days": due,
+            "reason": reason,
+            "intensity": burner.get("intensity"),
+            "fuel_flow": burner.get("fuel_flow"),
+        })
+    cat = furnace["catalyst"]
+    action, due, reason = _pm_plan("catalyst", cat["light"])
+    assets.append({
+        "asset_id": "CAT-BED",
+        "kind": "catalyst",
+        "light": cat["light"],
+        "action": action,
+        "due_days": due,
+        "reason": reason,
+        "activity": cat["activity"],
+    })
+    order = {"red": 0, "orange": 1, "grey": 2, "green": 3}
+    assets.sort(key=lambda item: (order.get(item["light"], 9), item["kind"], item["asset_id"]))
+    counts = {"red": 0, "orange": 0, "green": 0, "grey": 0}
+    for asset in assets:
+        counts[asset["light"]] = counts.get(asset["light"], 0) + 1
+    bounds = [(0, 20000, "کمتر از ۲۰٬۰۰۰", "red"),
+              (20000, 40000, "۲۰ تا ۴۰ هزار", "orange"),
+              (40000, 70000, "۴۰ تا ۷۰ هزار", "green"),
+              (70000, 10**12, "بیش از ۷۰ هزار", "green")]
+    buckets = []
+    for low, high, label, light in bounds:
+        n = sum(1 for tube in rul["tubes"] if low <= tube["rul_h"] < high)
+        buckets.append({"label": label, "n": n, "light": light})
+    return {
+        "source": rul["source"],
+        "counts": counts,
+        "assets": assets,
+        "rul_buckets": buckets,
+    }
+
+
+def _hotspot_rows(readings: list[dict]) -> tuple[float, list[dict]]:
+    temps = [float(r["wall_temp_c"]) for r in readings]
+    if not temps:
+        return 0.0, []
+    mean_t = sum(temps) / len(temps)
+    hot = [
+        {"tube_id": r["tube_id"], "wall_temp_c": r["wall_temp_c"],
+         "delta_c": round(float(r["wall_temp_c"]) - mean_t, 2)}
+        for r in readings if float(r["wall_temp_c"]) - mean_t > 30
+    ]
+    return mean_t, hot
+
+
+def _digital_twin(db_path: str) -> dict:
+    """Live process twin: measured furnace state against the nominal model."""
+    nominal_wall = 880.0
+    with dbm.get_conn(db_path) as conn:
+        readings = dbm.get_temperature_map(conn)
+        furnace = _furnace_burners(conn)
+        n_tubes = conn.execute("SELECT COUNT(*) FROM tubes").fetchone()[0]
+    mean_t, hotspots = _hotspot_rows(readings)
+    hot_ids = {h["tube_id"] for h in hotspots}
+    tube_nodes = [
+        {
+            "tube_id": r["tube_id"],
+            "wall_temp_c": r["wall_temp_c"],
+            "light": "red" if r["tube_id"] in hot_ids else _temp_light(float(r["wall_temp_c"])),
+        }
+        for r in readings
+    ]
+    reformer_light = _worst_light([t["light"] for t in tube_nodes]) if tube_nodes else "grey"
+    burner_light = _worst_light([b["light"] for b in furnace["burners"]]) if furnace["burners"] else "grey"
+    cat = furnace["catalyst"]
+    inefficient = sum(1 for b in furnace["burners"] if b.get("inefficient"))
+    nodes = [
+        {
+            "id": "feed",
+            "name": "خوراک",
+            "light": "grey",
+            "note": "سنسور دبی خوراک به تاریخ‌نگار وصل نیست",
+            "kpis": [],
+        },
+        {
+            "id": "reformer",
+            "name": "کوره ریفورمر",
+            "light": reformer_light,
+            "note": "دمای دیواره زنده هر لوله",
+            "kpis": [
+                {"label": "میانگین دما", "value": round(mean_t, 1) if readings else None, "unit": "°C"},
+                {"label": "لوله‌ها", "value": n_tubes, "unit": ""},
+                {"label": "نقاط داغ", "value": len(hotspots), "unit": ""},
+            ],
+            "tubes": tube_nodes,
+        },
+        {
+            "id": "burners",
+            "name": "مشعل‌ها",
+            "light": burner_light,
+            "note": "آخرین قرائت هر مشعل",
+            "kpis": [
+                {"label": "تعداد", "value": furnace["n"], "unit": ""},
+                {"label": "ناکارآمد", "value": inefficient, "unit": ""},
+            ],
+            "burners": [
+                {"burner_id": b["burner_id"], "intensity": b.get("intensity"), "light": b["light"]}
+                for b in furnace["burners"]
+            ],
+        },
+        {
+            "id": "catalyst",
+            "name": "بستر کاتالیست",
+            "light": cat["light"],
+            "note": "فعالیت پیش‌بینی‌شده مدل ماژول ۴",
+            "kpis": [
+                {"label": "فعالیت", "value": None if cat["activity"] is None else round(cat["activity"] * 100, 1), "unit": "%"},
+                {"label": "افت فشار", "value": cat["dp_bar"], "unit": "bar"},
+                {"label": "سن", "value": cat["age_h"], "unit": "h"},
+            ],
+        },
+        {
+            "id": "syngas",
+            "name": "گاز سنتز",
+            "light": "grey",
+            "note": "آنالایزر ترکیب خروجی وصل نیست",
+            "kpis": [],
+        },
+    ]
+    residuals = []
+    if readings:
+        residuals.append({
+            "name": "دمای دیواره",
+            "measured": round(mean_t, 2),
+            "twin": nominal_wall,
+            "residual": round(mean_t - nominal_wall, 2),
+            "unit": "°C",
+        })
+        residuals.append({
+            "name": "نقاط داغ",
+            "measured": len(hotspots),
+            "twin": 0,
+            "residual": len(hotspots),
+            "unit": "",
+        })
+    if furnace["burners"]:
+        residuals.append({
+            "name": "مشعل ناکارآمد",
+            "measured": inefficient,
+            "twin": 0,
+            "residual": inefficient,
+            "unit": "",
+        })
+    if cat["activity"] is not None:
+        residuals.append({
+            "name": "فعالیت نسبت به بستر نو",
+            "measured": cat["activity"],
+            "twin": 1.0,
+            "residual": round(cat["activity"] - 1.0, 4),
+            "unit": "",
+        })
+    return {"nodes": nodes, "residuals": residuals, "nominal_wall_c": nominal_wall}
+
+
+def _recon_check(check_id: str, name: str, status: str, measured, reference, unit: str) -> dict:
+    residual = None
+    if isinstance(measured, (int, float)) and isinstance(reference, (int, float)):
+        residual = round(float(measured) - float(reference), 4)
+    return {
+        "id": check_id,
+        "name": name,
+        "status": status,
+        "measured": measured,
+        "reference": reference,
+        "residual": residual,
+        "unit": unit,
+    }
+
+
+def _reconciliation(db_path: str) -> dict:
+    """Range, completeness, and balance checks on the live furnace sample."""
+    with dbm.get_conn(db_path) as conn:
+        tubes = dbm.get_tubes(conn)
+        readings = dbm.get_temperature_map(conn)
+        furnace = _furnace_burners(conn)
+        open_hot = conn.execute(
+            "SELECT COUNT(*) FROM alerts WHERE status='open' AND module='module1'"
+        ).fetchone()[0]
+        dup = conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT tube_id FROM temperature_readings
+                WHERE ts_minute = (SELECT MAX(ts_minute) FROM temperature_readings)
+                GROUP BY tube_id HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0]
+    mean_t, hotspots = _hotspot_rows(readings)
+    temps = [float(r["wall_temp_c"]) for r in readings]
+    n_tubes = len(tubes)
+    n_read = len(readings)
+    checks = []
+    if n_tubes == 0:
+        coverage = "fail"
+    elif n_read == n_tubes:
+        coverage = "pass"
+    elif n_read == 0:
+        coverage = "fail"
+    else:
+        coverage = "warn"
+    checks.append(_recon_check(
+        "coverage", "کامل بودن نقشه دما", coverage, n_read, n_tubes, "لوله",
+    ))
+    if not temps:
+        span = "fail"
+        range_measured = None
+    else:
+        outside = sum(1 for t in temps if t < 700 or t > 1100)
+        hot_band = sum(1 for t in temps if t < 800 or t > 980)
+        if outside:
+            span = "fail"
+            range_measured = outside
+        elif hot_band:
+            span = "warn"
+            range_measured = hot_band
+        else:
+            span = "pass"
+            range_measured = 0
+    checks.append(_recon_check(
+        "temp_range", "محدوده فیزیکی دما", span, range_measured, 0, "لوله خارج از بازه",
+    ))
+    if temps:
+        balance = _check_status(abs(mean_t - 880.0), 40, 80)
+        spread = (sum((t - mean_t) ** 2 for t in temps) / len(temps)) ** 0.5
+        spread_status = _check_status(spread, 25, 60)
+    else:
+        balance = "fail"
+        spread = None
+        spread_status = "fail"
+    checks.append(_recon_check(
+        "temp_balance", "تراز دما با مدل نامی ۸۸۰°C", balance,
+        round(mean_t, 2) if temps else None, 880.0, "°C",
+    ))
+    checks.append(_recon_check(
+        "temp_spread", "پراکندگی دمای لوله‌ها", spread_status,
+        None if spread is None else round(spread, 2), 25.0, "°C",
+    ))
+    alert_gap = abs(int(open_hot) - len(hotspots))
+    alert_status = "pass" if alert_gap == 0 else ("warn" if alert_gap == 1 else "fail")
+    checks.append(_recon_check(
+        "hotspot_alerts", "تطابق هشدار نقطه داغ", alert_status, int(open_hot), len(hotspots), "مورد",
+    ))
+    checks.append(_recon_check(
+        "duplicates", "یکتایی قرائت آخر هر لوله", "pass" if dup == 0 else "fail", int(dup), 0, "لوله تکراری",
+    ))
+    fuels = [b.get("fuel_flow") for b in furnace["burners"]]
+    if not fuels:
+        fuel_status = "fail"
+        fuel_bad = None
+    else:
+        fuel_bad = sum(1 for f in fuels if f is None or not (120 <= float(f) <= 280))
+        fuel_status = "pass" if fuel_bad == 0 else "fail"
+    checks.append(_recon_check(
+        "fuel_balance", "دبی سوخت در بازه آموزش مدل", fuel_status,
+        0 if fuel_bad is None else fuel_bad, 0, "مشعل خارج از بازه",
+    ))
+    activity = furnace["catalyst"]["activity"]
+    if activity is None:
+        cat_status = "fail"
+    elif 0.05 <= activity <= 1.05:
+        cat_status = "pass"
+    else:
+        cat_status = "fail"
+    checks.append(_recon_check(
+        "catalyst_range", "فعالیت کاتالیست در بازه فیزیکی", cat_status, activity, 1.0, "",
+    ))
+    weight = {"pass": 1.0, "warn": 0.5, "fail": 0.0}
+    score = round(sum(weight[c["status"]] for c in checks) / len(checks), 3)
+    return {
+        "score": score,
+        "n_pass": sum(1 for c in checks if c["status"] == "pass"),
+        "n_warn": sum(1 for c in checks if c["status"] == "warn"),
+        "n_fail": sum(1 for c in checks if c["status"] == "fail"),
+        "checks": checks,
+    }
+
+
 def _live_loop(db_path: str) -> None:
     """Append one furnace sample every 5 seconds while MRTO_LIVE_SIM=1."""
     import random
@@ -658,49 +1134,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         """Return RUL per tube using the trained Module 2 model.
 
         Falls back to physics estimate if model unavailable.
-        Uses the real per-tube average wall temperature from the latest
-        readings (not a hardcoded 880 °C) so predictions reflect actual
-        operating conditions.
+        Each tube carries a traffic light: red, orange, or green.
         """
-        model = _get_model("module2_rul.joblib")
-        with dbm.get_conn(app.state.db_path) as conn:
-            tubes = dbm.get_tubes(conn)
-        if model is not None and tubes:
-            try:
-                df = pd.DataFrame(tubes)
-                tube_ids = df["tube_id"].tolist()
-                # Real per-tube average wall temperature from latest readings.
-                with dbm.get_conn(app.state.db_path) as conn:
-                    avg_t_map = _avg_wall_temp_per_tube(conn, tube_ids)
-                df["avg_wall_temp_c"] = df["tube_id"].map(avg_t_map).astype(float)
-                df["consumed_life_fraction"] = (df["last_replaced_days_ago"] * 24) / df["design_life_h"]
-                rul = model.predict_rul(df)
-                pfail = model.predict_failure_prob(df)
-                return {
-                    "source": "trained_model",
-                    "tubes": [
-                        {"tube_id": tid, "rul_h": int(r), "p_fail_90d": round(float(p), 4)}
-                        for tid, r, p in zip(df["tube_id"], rul, pfail)
-                    ],
-                }
-            except Exception as e:
-                # Surface the failure so operators can detect a broken model
-                # instead of silently falling back. Still degrade gracefully.
-                pass  # fall through to physics estimate
-        # Physics fallback — uses real per-tube average wall temperature.
-        rows = []
-        with dbm.get_conn(app.state.db_path) as conn:
-            avg_t_map = _avg_wall_temp_per_tube(conn, [t["tube_id"] for t in tubes])
-        from mrto.synthetic_data import lmp_to_rupture_time
-        for t in tubes:
-            avg_t = avg_t_map.get(t["tube_id"], 880.0)
-            t_rupt = lmp_to_rupture_time(avg_t)
-            elapsed = t["last_replaced_days_ago"] * 24
-            rul = max(0.0, t_rupt - elapsed)
-            consumed = elapsed / max(t_rupt, 1)
-            p_fail_90d = 1.0 / (1.0 + (1.0 - max(0, min(1, consumed - 0.7))) * 10)
-            rows.append({"tube_id": t["tube_id"], "rul_h": int(rul), "p_fail_90d": round(p_fail_90d, 4)})
-        return {"source": "physics_fallback", "tubes": rows}
+        return _compute_rul(app.state.db_path)
 
     @app.post("/api/v1/optimization")
     def optimization(req: OptimizationReq, _user: dict = Depends(current_user)) -> dict:
@@ -725,65 +1161,23 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         temperature_map) instead of a hardcoded 880 °C, so the burner
         inefficiency prediction reflects actual furnace conditions.
         """
-        catalyst_activity = None
         with dbm.get_conn(app.state.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT burner_id, ts_minute, fuel_flow, intensity, angle
-                FROM burner_status
-                WHERE id IN (
-                    SELECT MAX(id) FROM burner_status GROUP BY burner_id
-                )
-                ORDER BY burner_id
-                """
-            ).fetchall()
-            overall_avg = conn.execute(
-                """
-                SELECT AVG(wall_temp_c) FROM temperature_readings
-                WHERE id IN (SELECT MAX(id) FROM temperature_readings GROUP BY tube_id)
-                """
-            ).fetchone()[0]
-        burners_list = [dict(r) for r in rows]
-        mean_wall = float(overall_avg) if overall_avg is not None else 880.0
-        model = _get_model("module4_burner_catalyst.joblib")
-        if model is not None:
-            try:
-                if burners_list:
-                    df = pd.DataFrame(burners_list).rename(
-                        columns={"fuel_flow": "fuel_flow_nm3h", "angle": "angle_deg"}
-                    )
-                    df["age_h"] = 2000
-                    df["avg_tube_t_c"] = mean_wall
-                    df["intensity"] = df["intensity"].fillna(0.9)
-                    df["fuel_flow_nm3h"] = df["fuel_flow_nm3h"].fillna(190)
-                    df["angle_deg"] = df["angle_deg"].fillna(0)
-                    preds = model.predict_inefficient(df)
-                    for b, p in zip(burners_list, preds):
-                        b["inefficient"] = int(p)
-                activity = model.predict_activity(pd.DataFrame([{
-                    "age_h": _CATALYST_BED["age_h"],
-                    "t_out_avg_c": mean_wall,
-                    "sc_avg": _CATALYST_BED["sc_avg"],
-                    "dp_bar": _CATALYST_BED["dp_bar"],
-                }]))
-                catalyst_activity = round(float(activity[0]), 4)
-            except Exception:
-                logger.exception("burner/catalyst model failed")
-        return {
-            "burners": burners_list,
-            "n": len(burners_list),
-            "catalyst_activity": catalyst_activity,
-            "mean_wall_temp_c": round(mean_wall, 2),
-            "catalyst": {
-                "activity": catalyst_activity,
-                "status": _catalyst_status(catalyst_activity),
-                "age_h": _CATALYST_BED["age_h"],
-                "sc_avg": _CATALYST_BED["sc_avg"],
-                "dp_bar": _CATALYST_BED["dp_bar"],
-                "t_out_avg_c": round(mean_wall, 2),
-                "replace_below": _CATALYST_REPLACE_BELOW,
-            },
-        }
+            return _furnace_burners(conn)
+
+    @app.get("/api/v1/maintenance")
+    def maintenance(_user: dict = Depends(current_user)) -> dict:
+        """Preventive-maintenance plan for tubes, burners, and the catalyst bed."""
+        return _maintenance_view(app.state.db_path)
+
+    @app.get("/api/v1/digital-twin")
+    def digital_twin(_user: dict = Depends(current_user)) -> dict:
+        """Live digital twin of the reformer line against the nominal model."""
+        return _digital_twin(app.state.db_path)
+
+    @app.get("/api/v1/reconciliation")
+    def reconciliation(_user: dict = Depends(current_user)) -> dict:
+        """Validate and reconcile the latest furnace sample."""
+        return _reconciliation(app.state.db_path)
 
     @app.get("/api/v1/alerts")
     def alerts(status_filter: str = "open",

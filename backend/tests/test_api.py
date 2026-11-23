@@ -161,6 +161,13 @@ def test_rul_endpoint_fallback(client):
     for t in body["tubes"]:
         assert "rul_h" in t and t["rul_h"] >= 0
         assert 0 <= t["p_fail_90d"] <= 1
+        assert t["light"] in ("red", "orange", "green")
+        if t["p_fail_90d"] > 0.5:
+            assert t["light"] == "red"
+        elif t["p_fail_90d"] > 0.2:
+            assert t["light"] == "orange"
+        else:
+            assert t["light"] == "green"
 
 
 def test_alert_ack_workflow(client):
@@ -472,3 +479,37 @@ def test_temperature_map_reports_latest_timestamp(client):
                 headers=h)
     body = client.get("/api/v1/temperature-map").json()
     assert body["ts_minute"] == 40
+
+
+def test_maintenance_plan_covers_every_tube(client):
+    body = client.get("/api/v1/maintenance").json()
+    tubes = [a for a in body["assets"] if a["kind"] == "tube"]
+    assert len(tubes) == 12
+    assert sum(body["counts"].values()) == len(body["assets"])
+    assert any(a["kind"] == "catalyst" for a in body["assets"])
+    for asset in body["assets"]:
+        assert asset["light"] in {"red", "orange", "green", "grey"}
+        assert asset["action"]
+    assert sum(b["n"] for b in body["rul_buckets"]) == 12
+
+
+def test_digital_twin_line_order(client):
+    body = client.get("/api/v1/digital-twin").json()
+    assert [n["id"] for n in body["nodes"]] == ["feed", "reformer", "burners", "catalyst", "syngas"]
+    assert body["nodes"][0]["light"] == "grey"
+    assert body["nodes"][-1]["light"] == "grey"
+
+
+def test_reconciliation_flags_impossible_temperature(client):
+    h = _auth_headers(_manager_token(client))
+    posted = client.post(
+        "/api/v1/ingest/temperature",
+        json={"tube_id": "T01-001", "ts_minute": 5, "wall_temp_c": 1200},
+        headers=h,
+    )
+    assert posted.status_code == 200, posted.text
+    body = client.get("/api/v1/reconciliation").json()
+    by_id = {c["id"]: c for c in body["checks"]}
+    assert by_id["temp_range"]["status"] == "fail"
+    assert body["n_pass"] + body["n_warn"] + body["n_fail"] == len(body["checks"])
+    assert 0 <= body["score"] <= 1

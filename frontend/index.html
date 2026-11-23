@@ -73,6 +73,41 @@
   .card.ok .value { color: var(--ok); }
   .card .delta { font-size: 0.8rem; color: var(--text-soft); margin-top: 4px; }
   .section-title { margin: 16px 0 10px; color: var(--text); font-size: 1rem; font-weight: 600; }
+  .lights { display: inline-flex; flex-direction: column; gap: 3px; vertical-align: middle; }
+  .lamp { width: 12px; height: 12px; border-radius: 50%; background: #243246; border: 1px solid #3d5570; display: block; }
+  .lamp.on.red { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+  .lamp.on.orange { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .lamp.on.green { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .legend .lamp { border-radius: 50%; }
+  .bars { display: flex; align-items: flex-end; gap: 12px; min-height: 160px; margin-top: 8px; }
+  .bar-col { flex: 1; min-width: 72px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+  .bar { width: 100%; max-width: 72px; border-radius: 8px 8px 0 0; background: var(--accent-2); }
+  .bar.red { background: var(--danger); }
+  .bar.orange { background: var(--warn); }
+  .bar.green { background: var(--ok); }
+  .bar-n { font-size: 0.85rem; font-weight: 700; margin-bottom: 4px; }
+  .bar-label { font-size: 0.75rem; color: var(--text-soft); text-align: center; margin-top: 6px; }
+  .twin-flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+  .twin-node { flex: 1 1 160px; background: var(--panel-2); border-radius: 12px; padding: 12px; border-top: 4px solid #3d5570; }
+  .twin-node.red { border-top-color: var(--danger); }
+  .twin-node.orange { border-top-color: var(--warn); }
+  .twin-node.green { border-top-color: var(--ok); }
+  .twin-node h3 { margin: 0 0 6px; font-size: 0.95rem; }
+  .twin-node .note { color: var(--text-soft); font-size: 0.75rem; min-height: 2.2em; }
+  .twin-kpi { display: flex; justify-content: space-between; gap: 8px; font-size: 0.82rem; padding: 3px 0; border-bottom: 1px solid rgba(55,220,242,0.12); }
+  .twin-arrow { align-self: center; color: var(--accent); font-size: 1.2rem; }
+  .twin-grid, .twin-dots { display: grid; grid-template-columns: repeat(6, 14px); gap: 3px; margin-top: 8px; }
+  .twin-cell, .twin-dot { width: 14px; height: 14px; border-radius: 3px; background: #243246; }
+  .twin-cell.red, .twin-dot.red { background: var(--danger); }
+  .twin-cell.orange, .twin-dot.orange { background: var(--warn); }
+  .twin-cell.green, .twin-dot.green { background: var(--ok); }
+  .recon-row { display: grid; grid-template-columns: minmax(140px, 1.4fr) 2fr auto; gap: 10px; align-items: center; margin: 8px 0; }
+  .recon-track { height: 12px; background: #243246; border-radius: 6px; overflow: hidden; }
+  .recon-fill { height: 100%; border-radius: 6px; }
+  .recon-fill.pass { background: var(--ok); }
+  .recon-fill.warn { background: var(--warn); }
+  .recon-fill.fail { background: var(--danger); }
+  .recon-val { font-size: 0.78rem; color: var(--text-soft); min-width: 88px; text-align: left; }
 
   .heatmap {
     display: grid; gap: 2px; margin: 12px 0;
@@ -234,6 +269,9 @@
     <div class="tab" data-tab="rul">۲. عمر باقیمانده</div>
     <div class="tab" data-tab="optim">۳. بهینه‌سازی S/C</div>
     <div class="tab" data-tab="burners">۴. مشعل و کاتالیست</div>
+    <div class="tab" data-tab="maintenance">نگهداری پیشگیرانه</div>
+    <div class="tab" data-tab="twin">دوقلوی دیجیتال</div>
+    <div class="tab" data-tab="reconcile">اعتبارسنجی داده</div>
     <div class="tab" data-tab="alerts">هشدارها</div>
     <div class="tab" data-tab="metrics">کیفیت مدل‌ها</div>
   </div>
@@ -284,10 +322,15 @@
   <div class="tab-content" data-content="rul">
     <div class="panel">
       <h2>ماژول ۲ — عمر باقیمانده و پیش‌بینی خرابی</h2>
-      <p style="color:var(--text-soft); font-size:0.88rem;">برآورد عمر باقیمانده هر لوله با مدل ترکیبی خزش-یادگیری ماشین (Larson-Miller + RandomForest). لوله‌های با RUL &lt; ۲۰٬۰۰۰ ساعت در اولویت بازرسی هستند.</p>
+      <p style="color:var(--text-soft); font-size:0.88rem;">برآورد عمر باقیمانده هر لوله با مدل ترکیبی خزش-یادگیری ماشین (Larson-Miller + RandomForest). چراغ قرمز احتمال خرابی بالای ۵۰٪، نارنجی بین ۲۰ تا ۵۰٪ و سبز زیر ۲۰٪ است.</p>
+      <div class="legend">
+        <span><i class="lamp on red"></i> قرمز — ریسک بالا</span>
+        <span><i class="lamp on orange"></i> نارنجی — ریسک متوسط</span>
+        <span><i class="lamp on green"></i> سبز — ریسک پایین</span>
+      </div>
       <div class="scroll-wrap">
         <table class="data" id="rul-table">
-          <thead><tr><th>لوله</th><th>عمر باقیمانده (h)</th><th>احتمال خرابی ۹۰ روزه</th><th>سطح ریسک</th><th>مصرف عمر</th></tr></thead>
+          <thead><tr><th>لوله</th><th>چراغ</th><th>عمر باقیمانده (h)</th><th>احتمال خرابی ۹۰ روزه</th><th>سطح ریسک</th><th>مصرف عمر</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -323,6 +366,52 @@
       <div class="scroll-wrap">
         <table class="data" id="burner-table">
           <thead><tr><th>مشعل</th><th>شدت</th><th>دبی سوخت (Nm³/h)</th><th>زاویه (°)</th><th>وضعیت پیش‌بینی</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preventive maintenance -->
+  <div class="tab-content" data-content="maintenance">
+    <div class="panel">
+      <h2>نگهداری پیشگیرانه</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">برنامه کار هر لوله، مشعل و بستر کاتالیست از عمر باقیمانده، ناکارآمدی مشعل و فعالیت کاتالیست ساخته می‌شود. چراغ همان قاعده تب عمر باقیمانده است.</p>
+      <div class="grid-cards" id="pm-cards"></div>
+      <h3 class="section-title">توزیع عمر باقیمانده لوله‌ها</h3>
+      <div class="bars" id="pm-bars"></div>
+      <h3 class="section-title">برنامه کار</h3>
+      <div class="scroll-wrap">
+        <table class="data" id="pm-table">
+          <thead><tr><th>قطعه</th><th>نوع</th><th>چراغ</th><th>اقدام</th><th>مهلت (روز)</th><th>دلیل</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Digital twin -->
+  <div class="tab-content" data-content="twin">
+    <div class="panel">
+      <h2>دوقلوی دیجیتال خط تولید</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">جریان خط از خوراک تا گاز سنتز. گره‌هایی که سنسور زنده ندارند خاکستری می‌مانند. اختلاف هر گره با مدل نامی پایین صفحه است.</p>
+      <div class="twin-flow" id="twin-flow"></div>
+      <h3 class="section-title">اختلاف مقدار زنده با مدل</h3>
+      <div id="twin-residuals"></div>
+    </div>
+  </div>
+
+  <!-- Data validation & reconciliation -->
+  <div class="tab-content" data-content="reconcile">
+    <div class="panel">
+      <h2>اعتبارسنجی و تطبیق داده</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">کامل بودن، محدوده فیزیکی، یکتایی قرائت و تراز دما و سوخت روی آخرین نمونه کوره سنجیده می‌شود.</p>
+      <div class="grid-cards" id="recon-cards"></div>
+      <h3 class="section-title">نتیجه هر کنترل</h3>
+      <div id="recon-bars"></div>
+      <div class="scroll-wrap" style="margin-top:14px;">
+        <table class="data" id="recon-table">
+          <thead><tr><th>کنترل</th><th>وضعیت</th><th>اندازه‌گیری</th><th>مرجع</th><th>مانده</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -484,7 +573,7 @@ function hideLogin() {
   $('#login-overlay').classList.add('hidden');
   updateBadge();
   // Reload all data after a successful login.
-  loadOverview(); loadRUL(); loadBurners(); loadAlerts(); loadMetrics();
+  loadOverview(); loadRUL(); loadBurners(); loadMaintenance(); loadTwin(); loadReconciliation(); loadAlerts(); loadMetrics();
 }
 function updateBadge() {
   if (!AUTH.access) { $('#user-badge').style.display = 'none'; return; }
@@ -546,6 +635,18 @@ function riskLevel(p) {
   if (p > 0.2) return { cls: 'warn', text: 'متوسط' };
   return { cls: 'ok', text: 'پایین' };
 }
+function lightOfFail(p) {
+  if (p > 0.5) return 'red';
+  if (p > 0.2) return 'orange';
+  return 'green';
+}
+function trafficLights(light) {
+  return el('span', { class: 'lights', title: { red: 'قرمز', orange: 'نارنجی', green: 'سبز', grey: 'بدون سنسور' }[light] || '' },
+    ['red', 'orange', 'green'].map(name => el('i', { class: 'lamp ' + name + (light === name ? ' on' : '') })),
+  );
+}
+const KIND_FA = { tube: 'لوله', burner: 'مشعل', catalyst: 'کاتالیست' };
+const RECON_FA = { pass: 'قبول', warn: 'هشدار', fail: 'رد' };
 
 // ── Overview load ──
 async function loadOverview() {
@@ -617,6 +718,7 @@ async function loadRUL() {
       const pct = Math.max(0, Math.min(1, t.rul_h / 100000));
       return el('tr', {},
         el('td', {}, t.tube_id),
+        el('td', {}, trafficLights(t.light || lightOfFail(t.p_fail_90d))),
         el('td', {}, Math.round(t.rul_h).toLocaleString('fa-IR')),
         el('td', {}, (t.p_fail_90d * 100).toFixed(1) + '%'),
         el('td', {}, el('span', { style: { color: `var(--${lvl.cls})` } }, lvl.text)),
@@ -852,8 +954,144 @@ async function loadMetrics() {
 // overlay is shown and data loads after a successful login (see hideLogin()).
 // In dev mode (MRTO_ALLOW_ANON=1) the backend serves anonymous viewers, so
 // these calls succeed and the dashboard renders immediately.
+const PM_COUNT = [
+  ['red', 'قرمز — اقدام نزدیک', 'danger'],
+  ['orange', 'نارنجی — برنامه‌ریزی', 'warn'],
+  ['green', 'سبز — پایش دوره‌ای', 'ok'],
+];
+async function loadMaintenance() {
+  try {
+    const m = await getJSON('/api/v1/maintenance');
+    const cards = $('#pm-cards');
+    if (cards) {
+      render(cards, PM_COUNT.map(([key, label, cls]) => el('div', { class: 'card ' + cls },
+        el('div', { class: 'label' }, label),
+        el('div', { class: 'value' }, String((m.counts && m.counts[key]) || 0)),
+      )));
+    }
+    const bars = $('#pm-bars');
+    const buckets = m.rul_buckets || [];
+    const maxN = Math.max(1, ...buckets.map(b => b.n || 0));
+    if (bars) {
+      render(bars, buckets.map(b => el('div', { class: 'bar-col' },
+        el('div', { class: 'bar-n' }, String(b.n)),
+        el('div', { class: 'bar ' + b.light, style: { height: Math.max(8, (b.n / maxN) * 120) + 'px' } }),
+        el('div', { class: 'bar-label' }, b.label),
+      )));
+    }
+    const tbody = $('#pm-table tbody');
+    if (tbody) {
+      render(tbody, (m.assets || []).map(a => el('tr', {},
+        el('td', {}, a.asset_id),
+        el('td', {}, KIND_FA[a.kind] || a.kind),
+        el('td', {}, trafficLights(a.light)),
+        el('td', {}, a.action || ''),
+        el('td', {}, a.due_days == null ? '—' : Number(a.due_days).toLocaleString('fa-IR')),
+        el('td', {}, a.reason || ''),
+      )));
+    }
+  } catch (e) { console.error(e); }
+}
+function twinKpis(kpis) {
+  return (kpis || []).map(k => {
+    const value = k.value == null ? '—' : Number(k.value).toLocaleString('fa-IR');
+    return el('div', { class: 'twin-kpi' },
+      el('span', {}, k.label),
+      el('b', {}, value + (k.unit ? ' ' + k.unit : '')),
+    );
+  });
+}
+async function loadTwin() {
+  try {
+    const twin = await getJSON('/api/v1/digital-twin');
+    const flow = $('#twin-flow');
+    const nodes = twin.nodes || [];
+    const kids = [];
+    nodes.forEach((node, i) => {
+      if (i) kids.push(el('div', { class: 'twin-arrow' }, '←'));
+      const body = [
+        el('h3', {}, node.name),
+        trafficLights(node.light),
+        el('p', { class: 'note' }, node.note || ''),
+        ...twinKpis(node.kpis),
+      ];
+      if (node.tubes && node.tubes.length) {
+        body.push(el('div', { class: 'twin-grid' }, node.tubes.map(t =>
+          el('div', { class: 'twin-cell ' + t.light, title: `${t.tube_id}: ${Number(t.wall_temp_c).toFixed(1)}°C` }),
+        )));
+      }
+      if (node.burners && node.burners.length) {
+        body.push(el('div', { class: 'twin-dots' }, node.burners.map(b =>
+          el('div', { class: 'twin-dot ' + b.light, title: b.burner_id }),
+        )));
+      }
+      kids.push(el('div', { class: 'twin-node ' + (node.light || '') }, body));
+    });
+    if (flow) render(flow, kids);
+    const box = $('#twin-residuals');
+    if (box) {
+      render(box, (twin.residuals || []).map(r => {
+        const scale = r.unit === '°C' ? 40 : (Math.abs(r.measured) <= 1.2 && Math.abs(r.twin) <= 1 ? 0.5 : 4);
+        const width = Math.max(6, Math.min(100, (Math.abs(r.residual || 0) / scale) * 100));
+        const cls = Math.abs(r.residual || 0) < 1e-9 ? 'pass' : (Math.abs(r.residual) > scale ? 'fail' : 'warn');
+        const measured = r.measured == null ? '—' : Number(r.measured).toLocaleString('fa-IR');
+        const model = r.twin == null ? '—' : Number(r.twin).toLocaleString('fa-IR');
+        return el('div', { class: 'recon-row' },
+          el('div', {}, r.name),
+          el('div', { class: 'recon-track' }, el('div', { class: 'recon-fill ' + cls, style: { width: width + '%' } })),
+          el('div', { class: 'recon-val' }, measured + ' / ' + model + (r.unit ? ' ' + r.unit : '')),
+        );
+      }));
+    }
+  } catch (e) { console.error(e); }
+}
+function reconNumber(value, unit) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  const text = Number(value).toLocaleString('fa-IR', { maximumFractionDigits: 2 });
+  return unit ? text + ' ' + unit : text;
+}
+async function loadReconciliation() {
+  try {
+    const rec = await getJSON('/api/v1/reconciliation');
+    const cards = $('#recon-cards');
+    if (cards) {
+      const scoreCls = rec.score >= 0.8 ? 'ok' : rec.score >= 0.5 ? 'warn' : 'danger';
+      render(cards, [
+        el('div', { class: 'card ' + scoreCls },
+          el('div', { class: 'label' }, 'امتیاز تطبیق'),
+          el('div', { class: 'value' }, Math.round((rec.score || 0) * 100) + '٪'),
+        ),
+        el('div', { class: 'card ok' }, el('div', { class: 'label' }, 'قبول'), el('div', { class: 'value' }, String(rec.n_pass || 0))),
+        el('div', { class: 'card warn' }, el('div', { class: 'label' }, 'هشدار'), el('div', { class: 'value' }, String(rec.n_warn || 0))),
+        el('div', { class: 'card danger' }, el('div', { class: 'label' }, 'رد'), el('div', { class: 'value' }, String(rec.n_fail || 0))),
+      ]);
+    }
+    const bars = $('#recon-bars');
+    if (bars) {
+      render(bars, (rec.checks || []).map(c => el('div', { class: 'recon-row' },
+        el('div', {}, c.name),
+        el('div', { class: 'recon-track' },
+          el('div', { class: 'recon-fill ' + (c.status === 'pass' ? 'pass' : c.status === 'warn' ? 'warn' : 'fail'),
+            style: { width: (c.status === 'pass' ? 100 : c.status === 'warn' ? 55 : 18) + '%' } })),
+        el('div', { class: 'recon-val' }, RECON_FA[c.status] || c.status),
+      )));
+    }
+    const tbody = $('#recon-table tbody');
+    if (tbody) {
+      render(tbody, (rec.checks || []).map(c => el('tr', {},
+        el('td', {}, c.name),
+        el('td', {}, el('span', { style: { color: c.status === 'pass' ? 'var(--ok)' : c.status === 'warn' ? 'var(--warn)' : 'var(--danger)' } }, RECON_FA[c.status] || c.status)),
+        el('td', {}, reconNumber(c.measured, c.unit)),
+        el('td', {}, reconNumber(c.reference, c.unit)),
+        el('td', {}, reconNumber(c.residual, c.unit)),
+      )));
+    }
+  } catch (e) { console.error(e); }
+}
 function refreshLive() {
-  return Promise.allSettled([loadOverview(), loadRUL(), loadBurners(), loadAlerts()]);
+  return Promise.allSettled([
+    loadOverview(), loadRUL(), loadBurners(), loadMaintenance(), loadTwin(), loadReconciliation(), loadAlerts(),
+  ]);
 }
 refreshLive().then(() => {
   const pill = $('#pill-status');
