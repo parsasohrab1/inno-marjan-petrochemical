@@ -5,7 +5,8 @@ import tempfile
 import pytest
 from fastapi.testclient import TestClient
 
-from mrto.app import create_app
+from mrto.app import create_app, _reformer_remaining_h
+from mrto.market import build_plan, parse_methanex_html
 
 
 @pytest.fixture
@@ -496,10 +497,13 @@ def test_maintenance_plan_covers_every_tube(client):
 def test_digital_twin_line_order(client):
     body = client.get("/api/v1/digital-twin").json()
     assert [n["id"] for n in body["nodes"]] == [
-        "feed", "compress", "hds", "saturator", "primary", "secondary", "synthesis",
+        "feed", "compress", "hds", "saturator", "primary", "asu",
+        "secondary", "synthesis", "distill", "storage",
     ]
     assert body["nodes"][0]["light"] == "grey"
     assert body["nodes"][-1]["light"] == "grey"
+    for node in body["nodes"]:
+        assert node["inlet"] and node["outlet"] and node["duty"]
     primary = next(n for n in body["nodes"] if n["id"] == "primary")
     assert "tubes" in primary and "burners" in primary
 
@@ -576,3 +580,108 @@ def test_benchmark_flags_tube_hotter_than_100000h_reference(client):
     assert body["energy_chart"][4]["value"] == 20
     assert body["n_pass"] + body["n_warn"] + body["n_fail"] == len(body["checks"])
     assert 0 <= body["score"] <= 1
+
+
+def test_plant_balance_scales_marjan_contract(client):
+    body = client.get("/api/v1/plant-balance").json()
+    plate = body["nameplate"]
+    assert plate["methanol_mt_per_year"] == 1.65
+    assert plate["gas_bcm_per_year"] == 1.5
+    assert abs(plate["nm3_per_t"] - (1.5e9 / 1.65e6)) < 0.2
+    assert body["product"] == "متانول"
+    assert "پارس جنوبی" in body["feedstock"]
+    assert [row["label"] for row in body["gas_chart"]] == ["قرارداد", "نقطه کار", "نقطه بهینه"]
+    assert [row["label"] for row in body["product_chart"]] == ["ظرفیت نامی", "نقطه کار", "نقطه بهینه"]
+    if body["now"] is not None:
+        assert body["now"]["gas_bcm"] > 1.5
+        assert body["now"]["methanol_mt"] < 1.65
+        assert abs(body["now"]["methanol_mt"] - 1.5 / (body["now"]["nm3_per_t"] / 1000)) < 0.05
+
+
+def test_catalyst_health_separates_live_wall_from_sample_images(client):
+    tok = _manager_token(client)
+    headers = _auth_headers(tok)
+    for tube_id, temp in (("T01-001", 870.0), ("T01-002", 875.0), ("T01-003", 960.0)):
+        posted = client.post("/api/v1/ingest/temperature",
+                              json={"tube_id": tube_id, "ts_minute": 60, "wall_temp_c": temp},
+                              headers=headers)
+        assert posted.status_code == 200
+    body = client.get("/api/v1/catalyst-health").json()
+    inspections = {row["id"]: row for row in body["inspections"]}
+    assert inspections["wall"]["measured"] is True
+    assert inspections["wall"]["n_hot"] >= 1
+    assert inspections["pellets"]["measured"] is False
+    assert inspections["gamma"]["measured"] is False
+    assert inspections["gamma"]["trace"][2]["density"] < inspections["gamma"]["trace"][1]["density"]
+    charges = {row["id"]: row for row in body["charges"]}
+    reformer = charges["reformer_ni"]
+    synthesis = charges["synthesis_cuzn"]
+    assert reformer["remaining_days"] is None or reformer["remaining_days"] >= 0
+    assert _reformer_remaining_h(0.61, 8000) == pytest.approx(8000 * 0.21 / 0.39, abs=1)
+    assert _reformer_remaining_h(0.3, 8000) == 0
+    assert reformer["purchase"]["lead_days"] == 180
+    assert reformer["purchase"]["volume_mass_kg"] is None
+    assert reformer["purchase"]["volume_tubes"] > 0
+    assert synthesis["remaining_days"] is None
+    assert synthesis["purchase"]["amount"] == 0
+    assert synthesis["purchase"]["buy_now"] is False
+    assert body["production"]["nameplate_mt"] == 1.65
+    assert "co2_t_per_t" not in body
+
+
+def test_methanex_sheet_parses_regional_prices():
+    html = "Euro 875/MT later USD 1,450/MT then USD 700/MT and USD 625/MT"
+    parsed = parse_methanex_html(html)
+    assert parsed["europe_eur_t"] == 875
+    assert parsed["north_america_usd_t"] == 1450
+    assert parsed["asia_usd_t"] == 700
+    assert parsed["china_usd_t"] == 625
+
+
+def test_production_plan_holds_contract_gas_cap(client, monkeypatch):
+    monkeypatch.setattr("mrto.app.fetch_market", lambda: {
+        "gas": {"ok": True, "value": 3.51, "change_pct": -1.0},
+        "gold": {"ok": True, "value": 3640},
+        "crude": {"ok": True, "value": 70},
+        "euro": {"ok": True, "value": 1.09},
+        "dollar": {"ok": True, "value": 2_709_700},
+        "methanol": {"ok": True, "asia_usd_t": 700, "china_usd_t": 625, "europe_eur_t": 875, "north_america_usd_t": 1450},
+        "meoh": {"ok": False},
+        "zagros": {"ok": True, "value": 171700, "change_pct": 3},
+        "fanavaran": {"ok": True, "value": 8620},
+        "marjan": {"ok": False},
+        "fetched_at": "test",
+    })
+    body = client.get("/api/v1/production-plan").json()
+    tonnes = [row["methanol_mt"] for row in body["scenarios"]]
+    assert [row["id"] for row in body["scenarios"]] == [
+        "base", "dollar_break", "gold_up", "demand_down", "demand_up",
+    ]
+    assert len(set(tonnes)) == 1
+    assert tonnes[0] == body["physical_mt"]
+    shock = body["scenarios"][1]
+    assert shock["rial_revenue_index"] == 80
+    assert shock["dollar_irr"] == round(2_709_700 * 0.8)
+    assert body["quotes"]["marjan"]["ok"] is False
+    held = build_plan(1.25, 0.40, 43.4, {"gas": {"ok": True, "value": 3.51}, "dollar": {"ok": True, "value": 100}, "gold": {"ok": True, "value": 1000}})
+    assert [row["methanol_mt"] for row in held["scenarios"]] == [1.25, 1.25, 1.25, 1.25, 1.25]
+    assert held["scenarios"][0]["methanol_mt"] < held["nameplate_mt"]
+    assert held["feed_compare"]["is_assaluyeh_tariff"] is False
+    assert held["feed_compare"]["implied_usd_per_t"] > 0
+    assert build_plan(None, None, None, {"gas": {"ok": False}})["scenarios"][0]["methanol_mt"] is None
+
+
+def test_metrics_names_algorithms_and_suite(client):
+    body = client.get("/api/v1/metrics").json()
+    by_task = {(row["module"], row["task"]): row for row in body["algorithms"]}
+    assert by_task[("module1_temperature_map", "دمای دیواره لوله")]["algorithm"] == "RandomForestRegressor"
+    assert by_task[("module2_rul", "عمر باقیمانده (ساعت)")]["algorithm"] == "RandomForestRegressor"
+    assert by_task[("module2_rul", "احتمال خرابی ۹۰ روز")]["algorithm"] == "RandomForestClassifier"
+    assert "لارسن-میلر" in by_task[("module2_rul", "عمر باقیمانده (ساعت)")]["note"]
+    assert by_task[("module3_optimization", "بازده تبدیل")]["algorithm"] == "GradientBoostingRegressor"
+    assert by_task[("module4_burner_catalyst", "مشعل ناکارآمد")]["algorithm"] == "RandomForestClassifier"
+    assert by_task[("module4_burner_catalyst", "فعالیت کاتالیست")]["algorithm"] == "RandomForestRegressor"
+    suite = body["suite"]
+    assert suite["gate"] == 0.70
+    assert "files" in suite and "tests" in suite
+    assert suite["tests_passed"] + suite["tests_failed"] + suite["tests_skipped"] == suite["tests_total"]

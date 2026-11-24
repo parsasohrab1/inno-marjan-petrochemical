@@ -102,6 +102,53 @@
   .twin-cell.orange, .twin-dot.orange { background: var(--warn); }
   .twin-cell.green, .twin-dot.green { background: var(--ok); }
   .pfd { display: flex; flex-direction: column; align-items: stretch; gap: 0; max-width: 980px; margin: 8px auto 0; }
+  .yard {
+    position: relative; height: 640px; margin-top: 8px; border-radius: 16px; overflow: hidden;
+    background:
+      radial-gradient(circle at 50% 42%, rgba(255,255,255,.55), transparent 46%),
+      linear-gradient(180deg, #e7edf2, #b7c2cc);
+  }
+  .yard-floor {
+    position: absolute; left: 8%; right: 8%; top: 18%; height: 62%;
+    background:
+      linear-gradient(90deg, rgba(255,255,255,.25) 1px, transparent 1px),
+      linear-gradient(rgba(255,255,255,.25) 1px, transparent 1px),
+      #b9b9b9;
+    background-size: 28px 28px;
+    transform: perspective(700px) rotateX(58deg);
+    border-radius: 12px; box-shadow: 0 30px 40px rgba(0,0,0,.18);
+  }
+  .yard-pipe {
+    position: absolute; height: 8px; margin-top: -4px; transform-origin: 0 50%;
+    background: linear-gradient(#ffe16a, #e2a514); border-radius: 4px;
+    box-shadow: 0 6px 0 rgba(0,0,0,.12); z-index: 1; pointer-events: none;
+  }
+  .equip {
+    position: absolute; z-index: 2; transform: translate(-50%, -100%);
+    border: 0; background: transparent; padding: 0; cursor: pointer; color: #102033;
+  }
+  .equip.is-on .equip-body { outline: 3px solid #0b6b8a; outline-offset: 3px; }
+  .equip-body { display: block; position: relative; filter: drop-shadow(10px 16px 0 rgba(20,30,40,.22)); }
+  .equip-name {
+    position: absolute; left: 50%; top: 100%; transform: translate(-50%, 8px);
+    white-space: nowrap; font-size: 0.72rem; background: rgba(255,255,255,.92);
+    border-radius: 999px; padding: 2px 8px; opacity: 0;
+  }
+  .equip:hover .equip-name, .equip.is-on .equip-name { opacity: 1; }
+  .shape-tank .equip-body { width: 58px; height: 92px; border-radius: 29px; background: linear-gradient(90deg, #d5dde4, #fff 42%, #c5ced6); }
+  .shape-tank .equip-body::after { content: ""; position: absolute; left: 0; right: 0; top: 38%; height: 12px; background: #2f6fed; }
+  .shape-column .equip-body { width: 36px; height: 150px; border-radius: 18px; background: linear-gradient(90deg, rgba(0,0,0,.25), transparent 40%, rgba(255,255,255,.35)), var(--equip, #d24b3a); }
+  .shape-sphere .equip-body { width: 86px; height: 86px; border-radius: 50%; background: radial-gradient(circle at 32% 30%, #ffe0a3, #f08a1a 58%, #c24d00); }
+  .shape-machine .equip-body { width: 78px; height: 54px; border-radius: 8px; background: linear-gradient(180deg, #7eb6ff, #2457c5); }
+  .shape-furnace .equip-body { width: 118px; height: 78px; border-radius: 8px; background: linear-gradient(180deg, #f3d48a, #c4552a); padding: 8px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; }
+  .shape-header .equip-body { width: 28px; height: 70px; border-radius: 8px; background: linear-gradient(90deg, #8d97a3, #e8edf2); }
+  .equip .mini { width: 12px; height: 12px; border-radius: 2px; background: #243246; }
+  .equip .mini.red { background: var(--danger); }
+  .equip .mini.orange { background: var(--warn); }
+  .equip .mini.green { background: var(--ok); }
+  .twin-detail { margin-top: 12px; background: var(--panel-2); border-radius: 12px; padding: 14px; border-inline-start: 3px solid var(--accent); }
+  .twin-detail h3 { margin: 0 0 8px; }
+  .twin-detail p { margin: 4px 0; color: var(--text-soft); }
   .pfd-stage { border: 1px solid var(--accent-2); border-radius: 16px; padding: 14px 16px; background: linear-gradient(180deg, rgba(55,220,242,0.06), transparent 42%), var(--panel-2); }
   .pfd-stage.red { border-color: var(--danger); }
   .pfd-stage.orange { border-color: var(--warn); }
@@ -156,6 +203,13 @@
   table.data th { color: var(--accent); font-weight: 600; }
   table.data tr:hover { background: rgba(55,220,242,0.05); }
   .scroll-wrap { overflow-x: auto; max-width: 100%; }
+  .scroll-y { max-height: 420px; overflow: auto; }
+  .cat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .cat-card { background: var(--panel-2); border-radius: 10px; padding: 12px; border-inline-start: 3px solid var(--accent); }
+  .cat-card img { width: 100%; height: 180px; object-fit: cover; border-radius: 8px; display: block; margin-bottom: 8px; }
+  .cat-card p { margin: 6px 0 0; color: var(--text-soft); font-size: 0.84rem; }
+  .gamma-row { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: center; margin: 6px 0; }
+  .gamma-bar { height: 14px; border-radius: 7px; background: var(--accent-2); }
 
   .gauge { position: relative; height: 12px; background: var(--panel-2);
     border-radius: 6px; overflow: hidden; margin-top: 6px; }
@@ -288,9 +342,12 @@
     <div class="tab" data-tab="rul">۲. عمر باقیمانده</div>
     <div class="tab" data-tab="optim">۳. بهینه‌سازی S/C</div>
     <div class="tab" data-tab="carbon">کربن و سوخت</div>
+    <div class="tab" data-tab="plant">خوراک و محصول</div>
+    <div class="tab" data-tab="plan">برنامه تولید</div>
     <div class="tab" data-tab="benchmark">بنچمارک</div>
     <div class="tab" data-tab="burners">۴. مشعل و کاتالیست</div>
     <div class="tab" data-tab="maintenance">نگهداری پیشگیرانه</div>
+    <div class="tab" data-tab="catalyst">پایش کاتالیست</div>
     <div class="tab" data-tab="twin">دوقلوی دیجیتال</div>
     <div class="tab" data-tab="reconcile">اعتبارسنجی داده</div>
     <div class="tab" data-tab="alerts">هشدارها</div>
@@ -399,6 +456,21 @@
     </div>
   </div>
 
+  <!-- Plant feedstock and product balance -->
+  <div class="tab-content" data-content="plant">
+    <div class="panel">
+      <h2>تراز خوراک و محصول مجتمع</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">خوراک، گاز فازهای پارس جنوبی در عسلویه است و محصول نامی، متانول صادراتی. این تب فقط دو پرسش قراردادی را جواب می‌دهد: گاز لازم برای ۱٫۶۵ میلیون تن، و متانول قابل تولید با ۱٫۵ میلیارد مترمکعب.</p>
+      <div class="grid-cards" id="plant-contract"></div>
+      <div class="grid-cards" id="plant-cards" style="margin-top:14px;"></div>
+      <h3 class="section-title">گاز برای حفظ محصول نامی (میلیارد مترمکعب در سال)</h3>
+      <div class="bars" id="plant-gas"></div>
+      <h3 class="section-title">متانول با خوراک قرارداد (میلیون تن در سال)</h3>
+      <div class="bars" id="plant-product"></div>
+      <p id="plant-advice" style="color:var(--text); font-size:0.9rem; margin-top:14px;"></p>
+    </div>
+  </div>
+
   <!-- International benchmark -->
   <div class="tab-content" data-content="benchmark">
     <div class="panel">
@@ -454,9 +526,10 @@
   <!-- Digital twin -->
   <div class="tab-content" data-content="twin">
     <div class="panel">
-      <h2>دوقلوی دیجیتال خط تولید متانول</h2>
-      <p style="color:var(--text-soft); font-size:0.88rem;">جریان از گاز پارس جنوبی تا حلقه سنتز. فقط ریفرمر اولیه دمای لوله، مشعل و فعالیت کاتالیست زنده دارد. بقیه واحدها تا وصل شدن سنسور خاکستری می‌مانند.</p>
-      <div class="pfd" id="twin-flow"></div>
+      <h2>دوقلوی دیجیتال</h2>
+      <p style="color:var(--text-soft); font-size:0.88rem;">هر قطعه را بزنید تا ورودی، خروجی و کارکردش بیاید. فقط ریفرمر اولیه قرائت زنده دارد.</p>
+      <div class="yard" id="twin-flow"></div>
+      <div class="twin-detail" id="twin-detail"></div>
       <h3 class="section-title">اختلاف مقدار زنده با مدل</h3>
       <div id="twin-residuals"></div>
     </div>
@@ -479,6 +552,54 @@
     </div>
   </div>
 
+  <!-- Production plan -->
+  <div class="tab-content" data-content="plan">
+    <div class="panel">
+      <h2>برنامه تولید</h2>
+      <p style="color:var(--text-soft);font-size:0.86rem;margin-top:0;">تناژ از سقف گاز قرارداد همین ریفرمر می‌آید. قیمت‌ها در هر بارخوانی از منبع زنده گرفته می‌شوند. تعرفه گاز عسلویه در این خوراک نیست.</p>
+      <div class="grid-cards" id="plan-cards"></div>
+      <p class="section-title">قیمت زنده</p>
+      <div class="grid-cards" id="plan-quotes"></div>
+      <p class="section-title">سناریوها</p>
+      <div class="scroll-wrap">
+        <table class="data" id="plan-scenarios">
+          <thead><tr><th>سناریو</th><th>شوک</th><th>تولید (میلیون تن)</th><th>تصمیم</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="section-title">رقبای داخلی، ظرفیت منتشرشده</p>
+      <div class="scroll-wrap">
+        <table class="data" id="plan-peers">
+          <thead><tr><th>مجتمع</th><th>محل</th><th>ظرفیت (میلیون تن)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="plan-dated"></div>
+      <p id="plan-feed" style="color:var(--text-soft);font-size:0.86rem;"></p>
+      <div id="plan-sources" style="margin-top:12px;"></div>
+    </div>
+  </div>
+
+  <!-- Consumable catalyst health -->
+  <div class="tab-content" data-content="catalyst">
+    <div class="panel">
+      <h2>پایش سلامت کاتالیست‌های مصرفی</h2>
+      <p style="color:var(--text-soft);font-size:0.86rem;margin-top:0;">دیواره لوله از قرائت زنده تفسیر می‌شود. عکس قرص و منحنی گاما نمونهٔ روش صنعتی‌اند، نه تصویر یا اسکن این مجتمع.</p>
+      <div class="cat-grid" id="cat-inspections"></div>
+      <p class="section-title">عمر باقیمانده و خرید</p>
+      <div class="grid-cards" id="cat-cards"></div>
+      <div class="scroll-wrap" style="margin-top:14px;">
+        <table class="data" id="cat-purchase">
+          <thead><tr><th>کاتالیست</th><th>میزان خرید</th><th>زمان خرید</th><th>حجم خرید</th><th>عمر باقیمانده</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="section-title">پیشنهاد نسبت به وضع تولید</p>
+      <div id="cat-advice"></div>
+      <div id="cat-sources" style="margin-top:12px;"></div>
+    </div>
+  </div>
+
   <!-- Alerts -->
   <div class="tab-content" data-content="alerts">
     <div class="panel">
@@ -491,10 +612,30 @@
   <div class="tab-content" data-content="metrics">
     <div class="panel">
       <h2>کیفیت مدل‌های آموزش‌دیده (مقایسه با اهداف SRS)</h2>
+      <p class="section-title">الگوریتم هر مدل</p>
+      <p style="color:var(--text-soft);font-size:0.86rem;margin:-6px 0 10px;">نام الگوریتم از کد آموزش است. پارامتر لارسن-میلر فقط برچسب عمر را می‌سازد.</p>
+      <div class="scroll-wrap">
+        <table class="data" id="algo-table">
+          <thead><tr><th>ماژول</th><th>وظیفه</th><th>الگوریتم</th><th>آماده‌سازی</th><th>تنظیم</th><th>آزمون آموزش</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="section-title">مقایسه با اهداف SRS</p>
       <div class="grid-cards" id="metrics-cards"></div>
       <div class="scroll-wrap" style="margin-top:14px;">
         <table class="data" id="metrics-table">
           <thead><tr><th>ماژول</th><th>معیار</th><th>مقدار</th><th>هدف SRS</th><th>وضعیت</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="section-title">آزمون‌های نرم‌افزار و پوشش خط</p>
+      <p style="color:var(--text-soft);font-size:0.86rem;margin:-6px 0 10px;">نتیجه آخرین اجرای pytest روی بسته mrto. آستانه پوشش خط در یکپارچه‌سازی ۷۰٪ است.</p>
+      <div class="grid-cards" id="suite-cards"></div>
+      <p class="section-title">پوشش هر فایل</p>
+      <div class="bars" id="cov-bars"></div>
+      <div class="scroll-y" style="margin-top:14px;">
+        <table class="data" id="suite-table">
+          <thead><tr><th>آزمون</th><th>گروه</th><th>فایل</th><th>نتیجه</th><th>زمان (ثانیه)</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -634,7 +775,7 @@ function hideLogin() {
   $('#login-overlay').classList.add('hidden');
   updateBadge();
   // Reload all data after a successful login.
-  loadOverview(); loadRUL(); loadBurners(); loadCarbon(); loadBenchmark(); loadMaintenance(); loadTwin(); loadReconciliation(); loadAlerts(); loadMetrics();
+  loadOverview(); loadRUL(); loadBurners(); loadCarbon(); loadPlant(); loadPlan(); loadBenchmark(); loadMaintenance(); loadCatalyst(); loadTwin(); loadReconciliation(); loadAlerts(); loadMetrics();
 }
 function updateBadge() {
   if (!AUTH.access) { $('#user-badge').style.display = 'none'; return; }
@@ -1007,7 +1148,86 @@ async function loadMetrics() {
       });
     });
     render(tbody, rows);
+    const passedN = rows.filter(r => r.textContent.includes('✓')).length;
+    const cards = $('#metrics-cards');
+    if (cards) {
+      render(cards, [
+        el('div', { class: 'card ' + (passedN === rows.length && rows.length ? 'ok' : 'warn') },
+          el('div', { class: 'label' }, 'اهداف SRS'),
+          el('div', { class: 'value' }, passedN.toLocaleString('fa-IR') + ' / ' + rows.length.toLocaleString('fa-IR')),
+        ),
+      ]);
+    }
+    renderAlgorithms(m.algorithms || []);
+    renderSuite(m.suite || {});
   } catch (e) { console.error(e); }
+}
+function renderAlgorithms(rows) {
+  const tbody = $('#algo-table tbody');
+  if (!tbody) return;
+  render(tbody, rows.map(a => {
+    let exam = '—';
+    if (a.holdout_pct != null) {
+      exam = 'جداسازی ' + Number(a.holdout_pct).toLocaleString('fa-IR') + '٪';
+      if (a.n_test != null) exam += '، ' + Number(a.n_test).toLocaleString('fa-IR') + ' نمونه';
+    }
+    return el('tr', {},
+      el('td', {}, a.module_label || ''),
+      el('td', {}, a.task || ''),
+      el('td', {}, a.algorithm || ''),
+      el('td', {}, a.prep || ''),
+      el('td', {}, a.settings || ''),
+      el('td', {}, exam + (a.note ? ' — ' + a.note : '')),
+    );
+  }));
+}
+const SUITE_STATUS = { passed: 'قبول', failed: 'مردود', error: 'خطا', skipped: 'رد شده' };
+function renderSuite(suite) {
+  const cards = $('#suite-cards');
+  const rate = suite.line_rate == null ? null : suite.line_rate * 100;
+  const gate = (suite.gate == null ? 0.7 : suite.gate) * 100;
+  if (cards) {
+    const covCls = rate == null ? '' : rate >= gate ? 'ok' : 'danger';
+    render(cards, [
+      el('div', { class: 'card' },
+        el('div', { class: 'label' }, 'آزمون اجراشده'),
+        el('div', { class: 'value' }, (suite.tests_total || 0).toLocaleString('fa-IR')),
+      ),
+      el('div', { class: 'card ' + ((suite.tests_failed || 0) ? 'danger' : 'ok') },
+        el('div', { class: 'label' }, 'قبول'),
+        el('div', { class: 'value' }, (suite.tests_passed || 0).toLocaleString('fa-IR')),
+      ),
+      el('div', { class: 'card ' + covCls },
+        el('div', { class: 'label' }, 'پوشش خط'),
+        el('div', { class: 'value' }, rate == null ? '—' : rate.toLocaleString('fa-IR', { maximumFractionDigits: 1 }) + '٪'),
+        el('div', { class: 'delta' }, 'آستانه ' + gate.toLocaleString('fa-IR') + '٪'),
+      ),
+    ]);
+  }
+  const bars = $('#cov-bars');
+  if (bars) {
+    const files = suite.files || [];
+    render(bars, files.map(f => el('div', { class: 'bar-col' },
+      el('div', { class: 'bar-n' }, ((Number(f.line_rate) || 0) * 100).toLocaleString('fa-IR', { maximumFractionDigits: 0 }) + '٪'),
+      el('div', { class: 'bar ' + ((Number(f.line_rate) || 0) >= (suite.gate || 0.7) ? 'green' : 'orange'),
+        style: { height: Math.max(6, (Number(f.line_rate) || 0) * 120) + 'px' } }),
+      el('div', { class: 'bar-label' }, f.label || f.file),
+    )));
+  }
+  const tbody = $('#suite-table tbody');
+  if (!tbody) return;
+  const tests = suite.tests || [];
+  if (!tests.length) {
+    render(tbody, [el('tr', {}, el('td', { colspan: '5' }, 'گزارش pytest روی دیسک نیست.'))]);
+    return;
+  }
+  render(tbody, tests.map(t => el('tr', {},
+    el('td', {}, t.title || t.name),
+    el('td', {}, t.group || ''),
+    el('td', {}, t.file || ''),
+    el('td', { style: { color: t.status === 'passed' ? 'var(--ok)' : 'var(--danger)' } }, SUITE_STATUS[t.status] || t.status),
+    el('td', {}, Number(t.time_s || 0).toLocaleString('fa-IR', { maximumFractionDigits: 2 })),
+  )));
 }
 
 // ── Init ──
@@ -1079,56 +1299,111 @@ function pfdStage(node, kids) {
     node.note ? el('p', { class: 'pfd-note' }, node.note) : null,
   );
 }
+const TWIN_LAYOUT = [
+  { id: 'feed', shape: 'header', x: -3.2, y: 0.2 },
+  { id: 'compress', shape: 'machine', x: -1.2, y: -0.6 },
+  { id: 'hds', shape: 'column', x: 0.8, y: -1.2, color: '#2f9e44' },
+  { id: 'saturator', shape: 'tank', x: -2.6, y: 2.2 },
+  { id: 'primary', shape: 'furnace', x: 0.4, y: 1.6 },
+  { id: 'asu', shape: 'column', x: 2.8, y: -0.4, color: '#37dcf2' },
+  { id: 'secondary', shape: 'sphere', x: 2.2, y: 2.6 },
+  { id: 'synthesis', shape: 'column', x: 4.4, y: 1.2, color: '#f0c14a' },
+  { id: 'distill', shape: 'column', x: 5.6, y: 3.2, color: '#d24b3a' },
+  { id: 'storage', shape: 'tank', x: 3.4, y: 4.4 },
+];
+function twinIso(x, y) {
+  return { sx: (x - y) * 52, sy: (x + y) * 22 };
+}
+let twinById = {};
+let twinSelected = 'primary';
+function showTwinUnit(id) {
+  twinSelected = id;
+  document.querySelectorAll('#twin-flow .equip').forEach(btn => {
+    btn.classList.toggle('is-on', btn.dataset.unit === id);
+  });
+  const node = twinById[id];
+  const box = $('#twin-detail');
+  if (!box || !node) return;
+  const face = node.id === 'primary'
+    ? el('div', { class: 'pfd-split' },
+        el('div', {},
+          el('div', { class: 'label' }, 'لوله‌ها'),
+          el('div', { class: 'twin-grid' }, (node.tubes || []).map(t =>
+            el('div', { class: 'twin-cell ' + t.light, title: t.tube_id + ' ' + Number(t.wall_temp_c).toFixed(1) }),
+          )),
+        ),
+        el('div', {},
+          el('div', { class: 'label' }, 'مشعل‌ها'),
+          el('div', { class: 'twin-dots' }, (node.burners || []).map(b =>
+            el('div', { class: 'twin-dot ' + b.light, title: b.burner_id }),
+          )),
+        ),
+      )
+    : null;
+  render(box, [
+    el('h3', {}, node.name || ''),
+    node.reaction ? el('div', { class: 'pfd-reaction' }, node.reaction) : null,
+    el('p', {}, 'کارکرد: ' + (node.duty || '—')),
+    el('p', {}, 'ورودی: ' + (node.inlet || '—')),
+    el('p', {}, 'خروجی: ' + (node.outlet || '—')),
+    node.note ? el('p', {}, node.note) : null,
+    ...twinKpis(node.kpis),
+    face,
+  ].filter(Boolean));
+}
 async function loadTwin() {
   try {
     const twin = await getJSON('/api/v1/digital-twin');
     const flow = $('#twin-flow');
-    const byId = {};
-    (twin.nodes || []).forEach(n => { byId[n.id] = n; });
-    const feed = byId.feed || { name: 'گاز طبیعی', light: 'grey' };
-    const steps = ['compress', 'hds', 'saturator'].map(id => byId[id]).filter(Boolean);
-    const primary = byId.primary || { name: 'ریفرمر اولیه', light: 'grey', kpis: [] };
-    const secondary = byId.secondary || { name: 'ریفرمر ثانویه', light: 'grey' };
-    const synthesis = byId.synthesis || { name: 'سنتز متانول', light: 'grey' };
-    const pretreatUnits = [];
-    steps.forEach((step, i) => {
-      if (i) pretreatUnits.push(el('div', { class: 'pfd-arrow' }, '←'));
-      pretreatUnits.push(el('div', { class: 'pfd-unit' },
-        el('h4', {}, step.name),
-        el('p', { class: 'pfd-note' }, step.note || ''),
-        ...twinKpis(step.kpis),
-      ));
+    twinById = {};
+    (twin.nodes || []).forEach(n => { twinById[n.id] = n; });
+    const pieces = TWIN_LAYOUT.filter(spec => twinById[spec.id]);
+    const pipes = [];
+    for (let i = 1; i < pieces.length; i++) {
+      const a = twinIso(pieces[i - 1].x, pieces[i - 1].y);
+      const b = twinIso(pieces[i].x, pieces[i].y);
+      const dx = b.sx - a.sx;
+      const dy = b.sy - a.sy;
+      pipes.push(el('span', { class: 'yard-pipe', style: {
+        left: 'calc(50% + ' + a.sx + 'px)',
+        top: 'calc(46% + ' + a.sy + 'px)',
+        width: Math.hypot(dx, dy) + 'px',
+        transform: 'rotate(' + (Math.atan2(dy, dx) * 180 / Math.PI) + 'deg)',
+      }}));
+    }
+    const buttons = pieces.map(spec => {
+      const node = twinById[spec.id];
+      const pos = twinIso(spec.x, spec.y);
+      const bodyKids = spec.shape === 'furnace'
+        ? (node.tubes || []).slice(0, 12).map(t => el('span', { class: 'mini ' + t.light }))
+        : [];
+      const body = el('span', { class: 'equip-body' }, ...bodyKids);
+      if (spec.color) body.style.setProperty('--equip', spec.color);
+      return el('button', {
+        type: 'button',
+        class: 'equip shape-' + spec.shape + (twinSelected === spec.id ? ' is-on' : ''),
+        'data-unit': spec.id,
+        style: {
+          left: 'calc(50% + ' + pos.sx + 'px)',
+          top: 'calc(46% + ' + pos.sy + 'px)',
+          zIndex: String(20 + Math.round(pos.sy)),
+        },
+      },
+        body,
+        el('span', { class: 'equip-name' }, node.name || ''),
+      );
     });
-    const kids = [
-      pfdStage(feed),
-      pfdDown('خوراک'),
-      pfdStage({ name: 'پیش‌تصفیه خوراک', light: 'grey', note: 'گاز طبیعی و بخار به ریفرمر اولیه می‌روند' }, [
-        el('div', { class: 'pfd-row' }, pretreatUnits),
-      ]),
-      pfdDown('مخلوط گاز طبیعی + بخار'),
-      pfdStage(primary, [
-        el('div', {}, ...twinKpis(primary.kpis)),
-        el('div', { class: 'pfd-split' },
-          el('div', {},
-            el('div', { class: 'label' }, 'لوله‌های کاتالیستی'),
-            el('div', { class: 'twin-grid' }, (primary.tubes || []).map(t =>
-              el('div', { class: 'twin-cell ' + t.light, title: `${t.tube_id}: ${Number(t.wall_temp_c).toFixed(1)}°C` }),
-            )),
-          ),
-          el('div', {},
-            el('div', { class: 'label' }, 'مشعل‌های گرمایش خارجی'),
-            el('div', { class: 'twin-dots' }, (primary.burners || []).map(b =>
-              el('div', { class: 'twin-dot ' + b.light, title: b.burner_id }),
-            )),
-          ),
-        ),
-      ]),
-      pfdDown('گاز تبدیل‌شده'),
-      pfdStage(secondary),
-      pfdDown('گاز سنتز'),
-      pfdStage(synthesis),
-    ];
-    if (flow) render(flow, kids);
+    if (flow) {
+      render(flow, [el('div', { class: 'yard-floor' }), ...pipes, ...buttons]);
+      if (!flow.dataset.bound) {
+        flow.dataset.bound = '1';
+        flow.addEventListener('click', (ev) => {
+          const btn = ev.target.closest('[data-unit]');
+          if (btn) showTwinUnit(btn.dataset.unit);
+        });
+      }
+    }
+    if (twinById[twinSelected]) showTwinUnit(twinSelected);
     const box = $('#twin-residuals');
     if (box) {
       render(box, (twin.residuals || []).map(r => {
@@ -1287,6 +1562,90 @@ async function loadCarbon() {
     }
   } catch (e) { console.error(e); }
 }
+function faFixed(value, digits) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  return Number(value).toLocaleString('fa-IR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+function plantAdvice(p) {
+  const now = p.now;
+  const opt = p.optimum;
+  if (!now) return 'شدت انرژی ریفرمر در دسترس نیست و تراز سالانه حساب نشد.';
+  const bits = [];
+  if (now.extra_gas_bcm > 0) {
+    bits.push(`برای حفظ ۱٫۶۵ میلیون تن متانول، خوراک به ${faFixed(now.gas_bcm, 2)} میلیارد مترمکعب در سال می‌رسد؛ ${faFixed(now.extra_gas_bcm, 2)} میلیارد بیشتر از قرارداد.`);
+  } else {
+    bits.push('برای محصول نامی، خوراک در سقف قرارداد ۱٫۵ میلیارد مترمکعب یا کمتر از آن است.');
+  }
+  if (now.methanol_gap_mt > 0) {
+    bits.push(`اگر گاز روی ۱٫۵ میلیارد مترمکعب بماند، محصول ${faFixed(now.methanol_mt, 2)} میلیون تن می‌شود؛ ${faFixed(now.methanol_gap_mt, 2)} میلیون تن کمتر از ظرفیت.`);
+  } else {
+    bits.push('با خوراک قرارداد، محصول به ظرفیت نامی می‌رسد یا از آن بیشتر می‌شود.');
+  }
+  if (opt && now.gas_bcm > opt.gas_bcm) {
+    bits.push(`نقطه بهینه حدود ${faFixed(now.gas_bcm - opt.gas_bcm, 2)} میلیارد مترمکعب گاز در سال کم می‌کند و در همان خوراک، ${faFixed(opt.methanol_mt - now.methanol_mt, 2)} میلیون تن متانول برمی‌گرداند.`);
+  }
+  bits.push('محصول مستقیم مجتمع متانول است. فرمالدئید، اسید استیک و رزین جزو تولید این واحد نیستند.');
+  return bits.join(' ');
+}
+async function loadPlant() {
+  try {
+    const p = await getJSON('/api/v1/plant-balance');
+    const name = p.nameplate || {};
+    const now = p.now || {};
+    const opt = p.optimum || {};
+    const contract = $('#plant-contract');
+    if (contract) {
+      render(contract, [
+        el('div', { class: 'card' },
+          el('div', { class: 'label' }, 'ظرفیت نامی متانول'),
+          el('div', { class: 'value' }, faFixed(name.methanol_mt_per_year, 2)),
+          el('div', { class: 'delta' }, 'میلیون تن در سال، حدود ۱۱٪ ظرفیت کشور'),
+        ),
+        el('div', { class: 'card' },
+          el('div', { class: 'label' }, 'قرارداد گاز طبیعی'),
+          el('div', { class: 'value' }, faFixed(name.gas_bcm_per_year, 1)),
+          el('div', { class: 'delta' }, 'میلیارد مترمکعب در سال، پارس جنوبی'),
+        ),
+        el('div', { class: 'card' },
+          el('div', { class: 'label' }, 'شدت طراحی'),
+          el('div', { class: 'value' }, faFixed(name.nm3_per_t, 0)),
+          el('div', { class: 'delta' }, 'Nm³ گاز به‌ازای هر تن متانول'),
+        ),
+      ]);
+    }
+    const cards = $('#plant-cards');
+    if (cards) {
+      const gasCls = (now.extra_gas_bcm || 0) > 0 ? 'warn' : 'ok';
+      const prodCls = (now.methanol_gap_mt || 0) > 0 ? 'danger' : 'ok';
+      render(cards, [
+        el('div', { class: 'card ' + gasCls },
+          el('div', { class: 'label' }, 'گاز اضافه برای محصول نامی'),
+          el('div', { class: 'value' }, faFixed(now.extra_gas_bcm, 2)),
+          el('div', { class: 'delta' }, 'میلیارد مترمکعب در سال'),
+        ),
+        el('div', { class: 'card ' + prodCls },
+          el('div', { class: 'label' }, 'کسری متانول با گاز قرارداد'),
+          el('div', { class: 'value' }, faFixed(now.methanol_gap_mt, 2)),
+          el('div', { class: 'delta' }, 'میلیون تن در سال'),
+        ),
+        el('div', { class: 'card ok' },
+          el('div', { class: 'label' }, 'گاز قابل صرفه‌جویی'),
+          el('div', { class: 'value' }, now.gas_bcm == null || opt.gas_bcm == null ? '—' : faFixed(now.gas_bcm - opt.gas_bcm, 2)),
+          el('div', { class: 'delta' }, 'میلیارد مترمکعب، تا نقطه بهینه'),
+        ),
+        el('div', { class: 'card ok' },
+          el('div', { class: 'label' }, 'متانول قابل بازگشت'),
+          el('div', { class: 'value' }, now.methanol_mt == null || opt.methanol_mt == null ? '—' : faFixed(opt.methanol_mt - now.methanol_mt, 2)),
+          el('div', { class: 'delta' }, 'میلیون تن، با همان ۱٫۵ میلیارد مترمکعب'),
+        ),
+      ]);
+    }
+    benchBars($('#plant-gas'), p.gas_chart);
+    benchBars($('#plant-product'), p.product_chart);
+    const advice = $('#plant-advice');
+    if (advice) advice.textContent = plantAdvice(p);
+  } catch (e) { console.error(e); }
+}
 function benchBars(target, rows) {
   if (!target) return;
   const values = (rows || []).map(r => Number(r.value) || 0);
@@ -1342,9 +1701,190 @@ async function loadBenchmark() {
     }
   } catch (e) { console.error(e); }
 }
+const CAT_IMAGE = {
+  'hot-band': 'img/cat-hot-band.jpg',
+  pellets: 'img/cat-pellets.jpg',
+};
+function catalystAdvice(p) {
+  const reformer = (p.charges || []).find(c => c.id === 'reformer_ni') || {};
+  const buy = reformer.purchase || {};
+  const prod = p.production || {};
+  const lines = [];
+  if (prod.methanol_mt != null) {
+    lines.push('با خوراک قرارداد، متانول این نقطه کار ' + faFixed(prod.methanol_mt, 2) + ' میلیون تن است'
+      + (prod.methanol_gap_mt > 0 ? ' و ' + faFixed(prod.methanol_gap_mt, 2) + ' میلیون تن از ظرفیت نامی ۱٫۶۵ کمتر است.' : '.'));
+  }
+  if (reformer.remaining_days != null) {
+    lines.push('عمر باقیمانده شارژ نیکل، با افت خطی فعالیت تا آستانه تعویض، ' + Number(reformer.remaining_days).toLocaleString('fa-IR') + ' روز است.');
+  }
+  if (buy.buy_now) {
+    lines.push('پنجره ساخت و حمل ' + Number(buy.lead_days).toLocaleString('fa-IR') + ' روزه رسیده است. اکنون یک شارژ نیکل برای '
+      + Number(buy.volume_tubes || 0).toLocaleString('fa-IR') + ' لوله تحت پایش بخرید. وزن کیلوگرم شارژ مجتمع در انبار ثبت نشده است.');
+  } else if (buy.when_days != null) {
+    lines.push('خرید شارژ نیکل را حدود ' + Number(buy.when_days).toLocaleString('fa-IR') + ' روز دیگر بگذارید.');
+  }
+  if ((prod.methanol_gap_mt || 0) > 0) {
+    lines.push('این کسری تولید را با زیاد کردن بار همین شارژ نیکل جبران نکنید.');
+  }
+  lines.push('بستر سنتز مس-روی سن نصب و اسکن چگالی ندارد. عمر معمول صنعتی ۳ تا ۴ سال است و برخی شارژها بیش از ۷ سال کار کرده‌اند. تا انجام اسکن، خریدی برای سنتز ثبت نکنید.');
+  return lines;
+}
+async function loadCatalyst() {
+  try {
+    const p = await getJSON('/api/v1/catalyst-health');
+    const box = $('#cat-inspections');
+    if (box) {
+      render(box, (p.inspections || []).map(item => el('div', { class: 'cat-card' },
+        item.sample_image && CAT_IMAGE[item.sample_image]
+          ? el('img', { src: CAT_IMAGE[item.sample_image], alt: item.title || '' })
+          : null,
+        el('div', {}, trafficLights(item.light), ' ', item.title || ''),
+        el('p', {}, item.measured ? 'قرائت همین واحد' : 'نمونه روش، نه اندازه‌گیری این واحد'),
+        item.trace ? el('div', {}, item.trace.map(row => el('div', { class: 'gamma-row' },
+          el('span', {}, row.level),
+          el('div', { class: 'gamma-bar', style: { width: Math.round((Number(row.density) || 0) * 100) + '%' } }),
+        ))) : null,
+        el('p', {}, item.finding || ''),
+        el('p', {}, item.practice || ''),
+      )));
+    }
+    const cards = $('#cat-cards');
+    if (cards) {
+      render(cards, (p.charges || []).map(c => el('div', { class: 'card ' + (c.light === 'red' ? 'danger' : c.light === 'orange' ? 'warn' : c.light === 'green' ? 'ok' : '') },
+        el('div', { class: 'label' }, c.name || ''),
+        el('div', { class: 'value' }, c.remaining_days == null ? 'نامعلوم' : Number(c.remaining_days).toLocaleString('fa-IR')),
+        el('div', { class: 'delta' }, c.remaining_days == null ? (c.literature_life || c.rul_basis || '') : 'روز باقیمانده'),
+      )));
+    }
+    const tbody = $('#cat-purchase tbody');
+    if (tbody) {
+      render(tbody, (p.charges || []).map(c => {
+        const buy = c.purchase || {};
+        const when = c.remaining_days == null
+          ? (c.id === 'synthesis_cuzn' ? 'بعد از اسکن' : 'نرخ افت هنوز معلوم نیست')
+          : (buy.buy_now ? 'اکنون' : 'حدود ' + Number(buy.when_days).toLocaleString('fa-IR') + ' روز دیگر');
+        const volume = buy.volume_tubes != null
+          ? Number(buy.volume_tubes).toLocaleString('fa-IR') + ' لوله، یک شارژ؛ وزن ثبت نشده'
+          : 'یک شارژ بستر؛ وزن ثبت نشده';
+        return el('tr', {},
+          el('td', {}, c.name || ''),
+          el('td', {}, Number(buy.amount || 0).toLocaleString('fa-IR') + ' شارژ'),
+          el('td', {}, when),
+          el('td', {}, volume),
+          el('td', {}, c.remaining_days == null ? 'نامعلوم' : Number(c.remaining_days).toLocaleString('fa-IR') + ' روز'),
+        );
+      }));
+    }
+    const advice = $('#cat-advice');
+    if (advice) render(advice, catalystAdvice(p).map(text => el('p', {}, text)));
+    const sources = $('#cat-sources');
+    if (sources) {
+      render(sources, (p.sources || []).map(s => el('p', {},
+        el('a', { href: s.url, target: '_blank', rel: 'noopener' }, s.title || s.url),
+      )));
+    }
+  } catch (e) { console.error(e); }
+}
+function planQuote(label, row, digits) {
+  if (!row || !row.ok || row.value == null) {
+    return el('div', { class: 'card' }, el('div', { class: 'label' }, label), el('div', { class: 'value' }, '—'));
+  }
+  const change = row.change_pct == null ? '' : (row.change_pct > 0 ? '+' : '') + Number(row.change_pct).toLocaleString('fa-IR', { maximumFractionDigits: 2 }) + '٪';
+  return el('div', { class: 'card' },
+    el('div', { class: 'label' }, label),
+    el('div', { class: 'value' }, Number(row.value).toLocaleString('fa-IR', { maximumFractionDigits: digits })),
+    el('div', { class: 'delta' }, (row.unit || '') + (change ? '  ' + change : '')),
+  );
+}
+async function loadPlan() {
+  try {
+    const p = await getJSON('/api/v1/production-plan');
+    const q = p.quotes || {};
+    const methanol = q.methanol || {};
+    const cards = $('#plan-cards');
+    if (cards) {
+      render(cards, [
+        el('div', { class: 'card ok' },
+          el('div', { class: 'label' }, 'برنامه تولید'),
+          el('div', { class: 'value' }, p.physical_mt == null ? '—' : faFixed(p.physical_mt, 2)),
+          el('div', { class: 'delta' }, 'میلیون تن در سال، سقف گاز قرارداد'),
+        ),
+        el('div', { class: 'card warn' },
+          el('div', { class: 'label' }, 'فاصله تا ظرفیت نامی'),
+          el('div', { class: 'value' }, p.gap_mt == null ? '—' : faFixed(p.gap_mt, 2)),
+          el('div', { class: 'delta' }, 'میلیون تن؛ با خرید گاز اضافه بسته نمی‌شود'),
+        ),
+      ]);
+    }
+    const quotes = $('#plan-quotes');
+    if (quotes) {
+      const methanolCard = (label, value, unit) => el('div', { class: 'card' },
+        el('div', { class: 'label' }, label),
+        el('div', { class: 'value' }, value == null ? '—' : Number(value).toLocaleString('fa-IR')),
+        el('div', { class: 'delta' }, unit),
+      );
+      render(quotes, [
+        planQuote('گاز هنری‌هاب', Object.assign({ unit: 'دلار بر میلیون بی‌تی‌یو' }, q.gas || {}), 2),
+        planQuote('نفت WTI', Object.assign({ unit: 'دلار بر بشکه' }, q.crude || {}), 2),
+        planQuote('طلا', Object.assign({ unit: 'دلار بر اونس' }, q.gold || {}), 0),
+        planQuote('دلار آزاد', Object.assign({ unit: 'ریال' }, q.dollar || {}), 0),
+        planQuote('یورو به دلار', Object.assign({ unit: 'دلار' }, q.euro || {}), 4),
+        methanolCard('متانول آسیا، متانکس', methanol.ok ? methanol.asia_usd_t : null, 'دلار بر تن'),
+        methanolCard('متانول چین، متانکس', methanol.ok ? methanol.china_usd_t : null, 'دلار بر تن'),
+        methanolCard('متانول اروپا، متانکس', methanol.ok ? methanol.europe_eur_t : null, 'یورو بر تن'),
+        planQuote('سهام متانکس', Object.assign({ unit: 'دلار' }, q.meoh || {}), 2),
+        planQuote('زاگرس', Object.assign({ unit: 'ریال' }, q.zagros || {}), 0),
+        planQuote('فن‌آوران', Object.assign({ unit: 'ریال' }, q.fanavaran || {}), 0),
+        (q.marjan && q.marjan.listed && !q.marjan.ok)
+          ? el('div', { class: 'card' },
+              el('div', { class: 'label' }, 'نماد مرجان'),
+              el('div', { class: 'value' }, 'بدون معامله'),
+              el('div', { class: 'delta' }, q.marjan.board || 'فرابورس'),
+            )
+          : planQuote('نماد مرجان', Object.assign({ unit: 'ریال' }, q.marjan || {}), 0),
+      ]);
+    }
+    const body = $('#plan-scenarios tbody');
+    if (body) {
+      render(body, (p.scenarios || []).map(s => el('tr', {},
+        el('td', {}, s.title || ''),
+        el('td', {}, s.shock || ''),
+        el('td', {}, s.methanol_mt == null ? '—' : faFixed(s.methanol_mt, 2)),
+        el('td', {}, s.action || ''),
+      )));
+    }
+    const peers = $('#plan-peers tbody');
+    if (peers) {
+      render(peers, (p.iran_capacity || []).map(row => el('tr', {},
+        el('td', {}, row.name || ''),
+        el('td', {}, row.where || ''),
+        el('td', {}, Number(row.capacity_mt).toLocaleString('fa-IR', { maximumFractionDigits: 2 })),
+      )));
+    }
+    const dated = $('#plan-dated');
+    if (dated) render(dated, (p.dated_notes || []).map(text => el('p', {}, text)));
+    const feed = $('#plan-feed');
+    const cmp = p.feed_compare || {};
+    if (feed) {
+      const base = cmp.implied_usd_per_t == null
+        ? 'هزینه خوراک با هنری‌هاب حساب نشد.'
+        : 'اگر خوراک به قیمت هنری‌هاب بود، انرژی ویژه فعلی حدود ' + faFixed(cmp.implied_usd_per_t, 0) + ' دلار بر تن گاز می‌شد. ' + (cmp.note || '');
+      const listing = (q.marjan && q.marjan.listed && !q.marjan.ok)
+        ? ' نماد مرجان در فرابورس ثبت است و قیمت پایانی ندارد، چون معامله‌ای ثبت نشده.'
+        : ((q.marjan && q.marjan.ok) ? '' : ' قیمت پایانی نماد مرجان از تابلو برنگشت.');
+      feed.textContent = base + listing;
+    }
+    const sources = $('#plan-sources');
+    if (sources) {
+      render(sources, (p.sources || []).map(s => el('p', {},
+        el('a', { href: s.url, target: '_blank', rel: 'noopener' }, s.title || s.url),
+      )));
+    }
+  } catch (e) { console.error(e); }
+}
 function refreshLive() {
   return Promise.allSettled([
-    loadOverview(), loadRUL(), loadBurners(), loadCarbon(), loadBenchmark(), loadMaintenance(), loadTwin(), loadReconciliation(), loadAlerts(),
+    loadOverview(), loadRUL(), loadBurners(), loadCarbon(), loadPlant(), loadPlan(), loadBenchmark(), loadMaintenance(), loadCatalyst(), loadTwin(), loadReconciliation(), loadAlerts(),
   ]);
 }
 refreshLive().then(() => {

@@ -24,6 +24,7 @@ import os
 import sys
 import json
 import time
+import xml.etree.ElementTree as ET
 import base64
 import hmac
 import hashlib
@@ -46,6 +47,7 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mrto import db as dbm
+from mrto.market import build_plan, fetch_market
 from mrto import models as mlm
 from mrto.ratelimit import RateLimiter
 from mrto import observability as obs
@@ -394,30 +396,42 @@ def _digital_twin(db_path: str) -> dict:
             "name": "گاز طبیعی",
             "subtitle": "از پالایشگاه پارس جنوبی",
             "light": "grey",
+            "inlet": "گاز فازهای پارس جنوبی در عسلویه",
+            "outlet": "گاز به کمپرسور",
+            "duty": "تأمین خوراک مجتمع",
             "note": "سنسور دبی خوراک به تاریخ‌نگار وصل نیست",
             "kpis": [],
         },
         {
             "id": "compress",
-            "name": "فشرده‌سازی گاز",
+            "name": "کمپرسور گاز",
             "group": "pretreat",
             "light": "grey",
+            "inlet": "گاز طبیعی کم‌فشار",
+            "outlet": "گاز فشرده",
+            "duty": "بالا بردن فشار گاز تا حد گوگردزدایی و ریفرمر",
             "note": "بدون قرائت زنده",
             "kpis": [],
         },
         {
             "id": "hds",
-            "name": "هیدروژن‌زدایی و گوگردزدایی",
+            "name": "گوگردزدایی",
             "group": "pretreat",
             "light": "grey",
+            "inlet": "گاز فشرده و هیدروژن بازگردانی",
+            "outlet": "گاز شیرین",
+            "duty": "گرفتن گوگرد تا کاتالیست نیکل مسموم نشود",
             "note": "بدون قرائت زنده",
             "kpis": [],
         },
         {
             "id": "saturator",
-            "name": "اشباع‌سازی با بخار",
+            "name": "اشباع با بخار",
             "group": "pretreat",
             "light": "green",
+            "inlet": "گاز شیرین و بخار",
+            "outlet": "مخلوط گاز و بخار",
+            "duty": "تنظیم نسبت بخار به کربن پیش از ریفرمر",
             "note": "نسبت بخار به کربنِ مدل، نه سنسور میدانی",
             "kpis": [{"label": "S/C", "value": cat["sc_avg"], "unit": ""}],
         },
@@ -427,7 +441,10 @@ def _digital_twin(db_path: str) -> dict:
             "subtitle": "لوله‌های کاتالیستی نیکل، گرمایش خارجی با مشعل",
             "reaction": "CH₄ + H₂O → CO + 3H₂",
             "light": primary_light,
-            "note": "خروجی: گاز تبدیل‌شده با دمای بالا",
+            "inlet": "مخلوط گاز طبیعی و بخار، به‌اضافه سوخت مشعل",
+            "outlet": "گاز تبدیل‌شده داغ",
+            "duty": "تبدیل متان با بخار روی کاتالیست نیکل داخل لوله",
+            "note": "فقط همین واحد دما، مشعل و فعالیت کاتالیست زنده دارد",
             "kpis": [
                 {"label": "میانگین دما", "value": round(mean_t, 1) if readings else None, "unit": "°C"},
                 {"label": "لوله‌ها", "value": n_tubes, "unit": ""},
@@ -442,19 +459,56 @@ def _digital_twin(db_path: str) -> dict:
             ],
         },
         {
-            "id": "secondary",
-            "name": "ریفرمر ثانویه / اتوترمال",
-            "subtitle": "اکسیژن از واحد جداسازی هوا",
+            "id": "asu",
+            "name": "جداسازی هوا",
             "light": "grey",
+            "inlet": "هوای محیط",
+            "outlet": "اکسیژن به ریفرمر ثانویه",
+            "duty": "تأمین اکسیژن احتراق داخلی اتوترمال",
+            "note": "سنسور اکسیژن وصل نیست",
+            "kpis": [],
+        },
+        {
+            "id": "secondary",
+            "name": "ریفرمر ثانویه",
+            "subtitle": "اتوترمال",
+            "light": "grey",
+            "inlet": "گاز ریفرمر اولیه و اکسیژن",
+            "outlet": "گاز سنتز",
+            "duty": "تکمیل تبدیل متان و تنظیم نسبت هیدروژن",
             "note": "آنالایزر گاز سنتز وصل نیست",
             "kpis": [],
         },
         {
             "id": "synthesis",
-            "name": "فشرده‌سازی و سنتز متانول",
+            "name": "سنتز متانول",
             "subtitle": "حلقه سنتز",
+            "reaction": "CO + 2H₂ → CH₃OH",
             "light": "grey",
+            "inlet": "گاز سنتز فشرده",
+            "outlet": "متانول خام",
+            "duty": "ساخت متانول روی کاتالیست مس-روی",
             "note": "دبی محصول به توزین وصل نیست",
+            "kpis": [],
+        },
+        {
+            "id": "distill",
+            "name": "برج تقطیر",
+            "light": "grey",
+            "inlet": "متانول خام",
+            "outlet": "متانول خالص",
+            "duty": "جدا کردن آب و ناخالصی از متانول صادراتی",
+            "note": "آنالایزر خلوص وصل نیست",
+            "kpis": [],
+        },
+        {
+            "id": "storage",
+            "name": "مخزن محصول",
+            "light": "grey",
+            "inlet": "متانول خالص",
+            "outlet": "بارگیری صادراتی",
+            "duty": "نگهداری متانول تا صادرات",
+            "note": "سطح مخزن وصل نیست",
             "kpis": [],
         },
     ]
@@ -916,6 +970,214 @@ def _benchmark_view(db_path: str) -> dict:
     }
 
 
+# Marjan nameplate: 1.65 Mt/y methanol from 1.5 bcm/y South Pars gas.
+_MARJAN_METHANOL_T_Y = 1_650_000.0
+_MARJAN_GAS_NM3_Y = 1_500_000_000.0
+
+
+def _scale_to_nameplate(sec_gj_per_t: float | None) -> dict | None:
+    """Map a reformer specific energy onto the plant's annual gas and methanol contract."""
+    if sec_gj_per_t is None or sec_gj_per_t <= 0:
+        return None
+    nm3_per_t = float(sec_gj_per_t) / _LHV_GJ_PER_NM3
+    gas_nm3 = _MARJAN_METHANOL_T_Y * nm3_per_t
+    methanol_t = _MARJAN_GAS_NM3_Y / nm3_per_t
+    return {
+        "nm3_per_t": round(nm3_per_t, 1),
+        "gas_bcm": round(gas_nm3 / 1e9, 3),
+        "extra_gas_bcm": round((gas_nm3 - _MARJAN_GAS_NM3_Y) / 1e9, 3),
+        "methanol_mt": round(methanol_t / 1e6, 3),
+        "methanol_gap_mt": round((_MARJAN_METHANOL_T_Y - methanol_t) / 1e6, 3),
+    }
+
+
+def _plant_balance(db_path: str) -> dict:
+    """Two contract questions: gas to hold nameplate product, and product from contract gas."""
+    furnace = _carbon_view(db_path)["furnace"]
+    design_nm3 = _MARJAN_GAS_NM3_Y / _MARJAN_METHANOL_T_Y
+    now = _scale_to_nameplate(furnace.get("sec_gj_per_t"))
+    optimum = _scale_to_nameplate(furnace.get("sec_opt_gj_per_t"))
+    return {
+        "feedstock": "گاز طبیعی فازهای پارس جنوبی، عسلویه",
+        "product": "متانول",
+        "nameplate": {
+            "methanol_mt_per_year": 1.65,
+            "gas_bcm_per_year": 1.5,
+            "nm3_per_t": round(design_nm3, 1),
+            "gj_per_t": round(design_nm3 * _LHV_GJ_PER_NM3, 2),
+            "iran_capacity_share_pct": 11,
+        },
+        "now": now,
+        "optimum": optimum,
+        "gas_chart": [
+            {"label": "قرارداد", "value": 1.5, "role": "reference"},
+            {"label": "نقطه کار", "value": None if now is None else now["gas_bcm"], "role": "measured"},
+            {"label": "نقطه بهینه", "value": None if optimum is None else optimum["gas_bcm"], "role": "optimum"},
+        ],
+        "product_chart": [
+            {"label": "ظرفیت نامی", "value": 1.65, "role": "reference"},
+            {"label": "نقطه کار", "value": None if now is None else now["methanol_mt"], "role": "measured"},
+            {"label": "نقطه بهینه", "value": None if optimum is None else optimum["methanol_mt"], "role": "optimum"},
+        ],
+    }
+
+
+# Planning assumption for a catalyst order, not a Marjan purchase contract.
+_CATALYST_LEAD_DAYS = 180
+
+
+def _reformer_remaining_h(activity: float | None, age_h: float | None) -> float | None:
+    """Hours until activity 0.4, assuming linear loss from 1.0 at hour zero."""
+    if activity is None or age_h is None or age_h <= 0:
+        return None
+    consumed = 1.0 - float(activity)
+    if consumed <= 0.02:
+        return None
+    return max(0.0, float(age_h) * (float(activity) - _CATALYST_REPLACE_BELOW) / consumed)
+
+
+def _catalyst_health(db_path: str) -> dict:
+    """Consumable-catalyst inspection, remaining life, and a purchase window.
+
+    Tube-wall heat and the Module 4 activity are live. Pellet photos and the
+    gamma trace are published examples, not a camera or a scan of this plant.
+    """
+    with dbm.get_conn(db_path) as conn:
+        readings = dbm.get_temperature_map(conn)
+        furnace = _furnace_burners(conn)
+    _mean, hotspots = _hotspot_rows(readings)
+    cat = furnace["catalyst"]
+    remaining_h = _reformer_remaining_h(cat["activity"], cat["age_h"])
+    remaining_days = None if remaining_h is None else int(round(remaining_h / 24))
+    buy_now = remaining_days is not None and remaining_days <= _CATALYST_LEAD_DAYS
+    order_in_days = None if remaining_days is None else max(0, remaining_days - _CATALYST_LEAD_DAYS)
+    n_tubes = len({r["tube_id"] for r in readings})
+    if hotspots and any(float(h["wall_temp_c"]) >= 930 or float(h["delta_c"]) >= 50 for h in hotspots):
+        wall_light = "red"
+    elif hotspots:
+        wall_light = "orange"
+    elif readings:
+        wall_light = "green"
+    else:
+        wall_light = "grey"
+    balance = _plant_balance(db_path)["now"] or {}
+    wall_finding = (
+        f"{len(hotspots)} لوله بیش از ۳۰ درجه از میانگین دیواره گرم‌تر است. "
+        "در ریفرمر بخار، نوار داغ به‌خصوص در ۲۰ تا ۴۰ درصد بالای لوله با کربن یا مسمومیت دیده می‌شود "
+        "و فضای خالی کوچک بارگذاری می‌تواند دمای موضعی را حدود ۳۰ درجه بالا ببرد."
+        if hotspots else
+        "قرائت زنده نوار داغ ندارد. عکس، شکل همین نشانه است برای وقتی دیواره ناهموار شود."
+    )
+    return {
+        "production": {
+            "methanol_mt": balance.get("methanol_mt"),
+            "methanol_gap_mt": balance.get("methanol_gap_mt"),
+            "nameplate_mt": 1.65,
+        },
+        "inspections": [
+            {
+                "id": "wall",
+                "title": "تفسیر عکس دیواره لوله",
+                "practice": "ظاهر لوله در کوره روشن: نوار داغ، نقطه داغ، یا لوله یکدست داغ",
+                "light": wall_light,
+                "measured": bool(readings),
+                "sample_image": "hot-band",
+                "n_hot": len(hotspots),
+                "finding": wall_finding,
+            },
+            {
+                "id": "pellets",
+                "title": "تفسیر ظاهر قرص تخلیه‌شده",
+                "practice": "حلقه خاکستری فلزی سالم است؛ توده سیاه و خردشده با کربن و شکست حرارتی هم‌خوان است",
+                "light": "grey",
+                "measured": False,
+                "sample_image": "pellets",
+                "finding": "از این واحد قرص تخلیه‌شده‌ای در سامانه نیست. عکس فقط دو ظاهر مرجع را کنار هم می‌گذارد.",
+            },
+            {
+                "id": "gamma",
+                "title": "رادیوگرافی گاما",
+                "practice": "پروفیل چگالی Tru-Scan: بستر پرتو را می‌گیرد و بخار آن را رد می‌کند",
+                "light": "grey",
+                "measured": False,
+                "sample_image": None,
+                "finding": "اسکن گامای بستر سنتز انجام نشده. افت چگالی را، اگر سیگنال عبور کند، کانال یا خردشدگی می‌خوانند.",
+                "trace": [
+                    {"level": "فضای بالا", "density": 0.12},
+                    {"level": "بستر", "density": 0.84},
+                    {"level": "ناحیه کم‌چگال", "density": 0.32},
+                    {"level": "بستر", "density": 0.8},
+                    {"level": "فضای پایین", "density": 0.1},
+                ],
+            },
+        ],
+        "charges": [
+            {
+                "id": "reformer_ni",
+                "name": "نیکل ریفرمر اولیه",
+                "light": cat["light"],
+                "remaining_days": remaining_days,
+                "rul_basis": "افت خطی فعالیت مدل از ۱٫۰ تا آستانه تعویض ۰٫۴",
+                "purchase": {
+                    "amount": 1 if buy_now else 0,
+                    "buy_now": buy_now,
+                    "when_days": order_in_days,
+                    "lead_days": _CATALYST_LEAD_DAYS,
+                    "volume_tubes": n_tubes,
+                    "volume_mass_kg": None,
+                },
+            },
+            {
+                "id": "synthesis_cuzn",
+                "name": "مس-روی-آلومینا سنتز متانول",
+                "light": "grey",
+                "remaining_days": None,
+                "literature_life": "۳ تا ۴ سال معمول، برخی شارژها تا بیش از ۷ سال",
+                "rul_basis": "سن نصب و اسکن این بستر در سامانه نیست",
+                "purchase": {
+                    "amount": 0,
+                    "buy_now": False,
+                    "when_days": None,
+                    "lead_days": _CATALYST_LEAD_DAYS,
+                    "volume_tubes": None,
+                    "volume_mass_kg": None,
+                },
+            },
+        ],
+        "sources": [
+            {"title": "Johnson Matthey — tube appearance and carbon", "url": "https://matthey.com/documents/d/guest/jm-h2-seminar-optimization-and-troubleshooting-pdf"},
+            {"title": "Johnson Matthey — carbon in the top 20–40% of the tube", "url": "https://matthey.com/documents/161599/179189/Carbon-Formation-Webinar-QA.pdf/d51750cf-6081-0025-32c3-8eb3df548d8f"},
+            {"title": "Johnson Matthey — voids raise local tube temperature about 30°C", "url": "https://matthey.com/documents/d/guest/jm_training-seminar-2024_catalyst-loading-and-unloading-final-pdf"},
+            {"title": "Tracerco Tru-Scan reactor density profile", "url": "https://tracerco.com/services/refineries-and-petrochemical/reactors/"},
+            {"title": "Johnson Matthey methanol catalyst life, typically 3–4 years", "url": "https://matthey.com/documents/d/guest/jm-methanol-synthesis-product-brochure-pdf"},
+            {"title": "Science Advances — Cu/ZnO life typically 2–6 years", "url": "https://www.science.org/doi/10.1126/sciadv.adk2081"},
+            {"title": "Air Liquide — methanol catalyst life up to six years", "url": "https://engineering-technologies.airliquide.com/sites/engineering/files/2022-07/og_02_20_s17_21_do.pdf"},
+        ],
+    }
+
+
+def _production_plan(db_path: str) -> dict:
+    """Contract-gas production plan under live prices and the asked shocks."""
+    furnace = _carbon_view(db_path)["furnace"]
+    scaled = _scale_to_nameplate(furnace.get("sec_gj_per_t")) or {}
+    plan = build_plan(
+        scaled.get("methanol_mt"),
+        scaled.get("methanol_gap_mt"),
+        furnace.get("sec_gj_per_t"),
+        fetch_market(),
+    )
+    plan["sources"] = [
+        {"title": "Methanex regional posted prices", "url": "https://www.methanex.com/our-products/about-methanol/pricing/"},
+        {"title": "Henry Hub, gold, crude and Methanex shares", "url": "https://query1.finance.yahoo.com/v8/finance/chart/NG=F?interval=1d&range=1d"},
+        {"title": "TGJU free-market dollar", "url": "https://call1.tgju.org/ajax.json"},
+        {"title": "TSETMC Zagros close", "url": "https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceInfo/13235547361447092"},
+        {"title": "Iran methanol capacity, CCFGroup 20 Mar 2026", "url": "https://www.ccfgroup.com/newscenter/newsview.php?Class_ID=D00000&Info_ID=2026032030020"},
+        {"title": "Methanex on MTO shutdowns and demand, 30 Oct 2026", "url": "https://www.fool.com/earnings/call-transcripts/2026/10/30/methanex-meoh-q3-2026-earnings-call-transcript/"},
+        {"title": "Zagros realized export price and gas cost, H1 2026", "url": "https://roydadnaft.ir/English/19367/"},
+    ]
+    return plan
+
+
 def _live_loop(db_path: str) -> None:
     """Append one furnace sample every 5 seconds while MRTO_LIVE_SIM=1."""
     import random
@@ -1178,6 +1440,350 @@ async def current_user(creds: HTTPAuthorizationCredentials = Depends(_bearer)) -
     if payload is None:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return payload
+
+
+# Algorithms match backend/mrto/models.py. Larson-Miller only labels RUL;
+# it is not the learned predictor.
+_MODEL_ALGORITHMS = [
+    {
+        "module": "module1_temperature_map",
+        "task": "دمای دیواره لوله",
+        "algorithm": "RandomForestRegressor",
+        "prep": "StandardScaler",
+        "settings": "120 درخت، عمق 14",
+        "holdout_pct": 20,
+        "n_test_field": "n_test",
+        "note": "",
+    },
+    {
+        "module": "module2_rul",
+        "task": "عمر باقیمانده (ساعت)",
+        "algorithm": "RandomForestRegressor",
+        "prep": "StandardScaler",
+        "settings": "150 درخت، عمق 12",
+        "holdout_pct": 20,
+        "n_test_field": "n_test",
+        "note": "برچسب آموزش از پارامتر لارسن-میلر با ثابت 20 برای آلیاژ HP-Nb ساخته می‌شود.",
+    },
+    {
+        "module": "module2_rul",
+        "task": "احتمال خرابی ۹۰ روز",
+        "algorithm": "RandomForestClassifier",
+        "prep": "StandardScaler",
+        "settings": "150 درخت، عمق 10، class_weight=balanced",
+        "holdout_pct": 20,
+        "n_test_field": "n_test",
+        "note": "برچسب کلاس از آستانه احتمال خرابی 0.3 روی همان برچسب لارسن-میلر است.",
+    },
+    {
+        "module": "module3_optimization",
+        "task": "بازده تبدیل",
+        "algorithm": "GradientBoostingRegressor",
+        "prep": "StandardScaler",
+        "settings": "200 درخت، عمق 4، نرخ یادگیری 0.1",
+        "holdout_pct": 20,
+        "n_test_field": "n_test",
+        "note": "",
+    },
+    {
+        "module": "module3_optimization",
+        "task": "ریسک رسوب کک",
+        "algorithm": "GradientBoostingRegressor",
+        "prep": "StandardScaler",
+        "settings": "150 درخت، عمق 4، نرخ یادگیری 0.1",
+        "holdout_pct": 20,
+        "n_test_field": "n_test",
+        "note": "همان جداسازی آموزش و آزمون مدل بازده.",
+    },
+    {
+        "module": "module3_optimization",
+        "task": "جستجوی نقطه کار",
+        "algorithm": "جستجوی شبکه‌ای مقید",
+        "prep": "—",
+        "settings": "S/C حداقل 2.5 و ریسک کک حداکثر 0.5",
+        "holdout_pct": None,
+        "n_test_field": None,
+        "note": "",
+    },
+    {
+        "module": "module4_burner_catalyst",
+        "task": "مشعل ناکارآمد",
+        "algorithm": "RandomForestClassifier",
+        "prep": "StandardScaler",
+        "settings": "150 درخت، عمق 10، class_weight=balanced",
+        "holdout_pct": 20,
+        "n_test_field": "n_test",
+        "note": "",
+    },
+    {
+        "module": "module4_burner_catalyst",
+        "task": "فعالیت کاتالیست",
+        "algorithm": "RandomForestRegressor",
+        "prep": "StandardScaler",
+        "settings": "150 درخت، عمق 12",
+        "holdout_pct": 20,
+        "n_test_field": None,
+        "note": "شمارش نمونه آزمون این رگرسور جدا در فایل معیار ذخیره نشده است.",
+    },
+]
+
+_COV_FILE_FA = {
+    "models.py": "مدل‌های یادگیری",
+    "app.py": "سرویس API",
+    "db.py": "پایگاه داده",
+    "synthetic_data.py": "داده مصنوعی",
+    "real_data.py": "داده واقعی",
+    "train_models.py": "اسکریپت آموزش",
+    "secrets.py": "رمز و کلید",
+    "ratelimit.py": "محدودیت نرخ",
+    "observability.py": "سلامت و متریک",
+    "migrations.py": "مهاجرت طرح",
+    "db_adapter.py": "اتصال پایگاه",
+    "__init__.py": "بسته",
+}
+
+_TEST_GROUP = {
+    "test_models.py": "آزمون مدل",
+    "test_synthetic_data.py": "داده مصنوعی",
+    "test_real_data.py": "داده واقعی",
+    "test_db.py": "پایگاه داده",
+    "test_api.py": "رابط API",
+    "test_phase3.py": "سلامت و مشاهده‌پذیری",
+    "test_phase4.py": "رمز و پشتیبان",
+}
+
+_TEST_TITLES = {
+    "test_module1_train_and_predict": "آموزش و پیش‌بینی دمای دیواره",
+    "test_module1_srs_accuracy_target": "هدف SRS خطای دمای دیواره",
+    "test_module2_train_and_predict": "آموزش عمر باقیمانده و احتمال خرابی",
+    "test_module3_train_and_optimize": "آموزش بازده و جستجوی نقطه کار",
+    "test_module4_train_and_predict": "آموزش مشعل و فعالیت کاتالیست",
+    "test_model_persistence_roundtrip": "ذخیره و بارگذاری مدل",
+    "test_optimization_feasibility_constraint": "قید S/C و ریسک کک",
+    "test_lmp_returns_finite_for_design_temperature": "عمر لارسن-میلر در دمای طراحی",
+    "test_lmp_higher_temperature_lower_life": "کاهش عمر با افزایش دما",
+    "test_tubes_shape_and_uniqueness": "یکتایی شناسه لوله",
+    "test_burner_profiles_sensible": "محدوده شدت مشعل",
+    "test_timeseries_within_bounds": "محدوده سری زمانی کوره",
+    "test_temperature_map_coverage": "پوشش نقشه دما برای هر لوله",
+    "test_rul_labels_nonneg_and_probability_in_unit": "عمر نامنفی و احتمال در بازه صفر تا یک",
+    "test_sc_optimization_dataset_shape_and_constraints": "شکل داده بهینه‌سازی و قیدها",
+    "test_burner_status_dataset_balanced_enough": "توازن برچسب مشعل",
+    "test_catalyst_dataset_activity_in_unit": "فعالیت کاتالیست در بازه مجاز",
+    "test_generate_all_writes_files": "نوشتن فایل‌های داده مصنوعی",
+    "test_datasets_have_required_keys": "کلیدهای داده واقعی",
+    "test_fetch_airfoil_returns_dataframe_or_none": "خواندن داده ایرفویل",
+    "test_fetch_all_returns_dict": "خواندن همه داده‌های واقعی",
+    "test_fetch_handles_missing_dir": "پوشه دادهٔ ناموجود",
+    "test_init_creates_schema": "ساخت طرح پایگاه",
+    "test_seed_admin_user": "کاربر مدیر اولیه",
+    "test_seed_demo_tubes": "لوله‌های نمونه",
+    "test_insert_and_retrieve_temperature": "ثبت و خواندن دما",
+    "test_insert_and_ack_alert": "ثبت و تأیید هشدار",
+    "test_ack_nonexistent_alert_returns_false": "تأیید هشدار ناموجود",
+    "test_audit_log": "رد ممیزی",
+    "test_get_tubes_by_row": "لوله‌ها بر اساس ردیف",
+    "test_hotspot_alert_generated_on_ingest": "هشدار نقطه داغ هنگام ثبت",
+    "test_health": "سلامت سرویس",
+    "test_root": "ریشه سرویس",
+    "test_login_success": "ورود درست",
+    "test_login_failure": "ورود نادرست",
+    "test_get_tubes": "فهرست لوله‌ها",
+    "test_get_tubes_filtered_by_row": "فیلتر ردیف لوله",
+    "test_ingest_temperature_and_hotspot_alert": "ثبت دما و هشدار نقطه داغ",
+    "test_ingest_creates_missing_tube": "ساخت لولهٔ ناموجود",
+    "test_ingest_rejects_anonymous": "رد ثبت ناشناس",
+    "test_ingest_rejects_bad_input": "رد ورودی خارج از محدوده",
+    "test_temperature_map_endpoint": "نقشه دما",
+    "test_rul_endpoint_fallback": "عمر باقیمانده و چراغ ریسک",
+    "test_alert_ack_workflow": "گردش تأیید هشدار",
+    "test_alert_ack_nonexistent": "هشدار ناموجود در API",
+    "test_burners_endpoint_empty": "مشعل بدون قرائت",
+    "test_metrics_endpoint": "معیار کیفیت مدل",
+    "test_daily_report": "گزارش روزانه",
+    "test_invalid_optimization_input": "ورودی نامعتبر بهینه‌سازی",
+    "test_openapi_docs_available": "مستند OpenAPI",
+    "test_jwt_tampered_payload_rejected": "رد توکن دستکاری‌شده",
+    "test_jwt_expired_rejected": "رد توکن منقضی",
+    "test_jwt_alg_none_rejected": "رد الگوریتم none",
+    "test_protected_endpoint_rejects_bad_token": "رد توکن خراب",
+    "test_refresh_token_rotation": "چرخش توکن تازه‌سازی",
+    "test_refresh_token_reuse_revokes_family": "ابطال خانواده با استفادهٔ مجدد",
+    "test_refresh_rejects_access_token": "رد توکن دسترسی به‌جای تازه‌سازی",
+    "test_access_rejects_refresh_token": "رد توکن تازه‌سازی به‌جای دسترسی",
+    "test_logout_revokes_refresh_family": "خروج و ابطال خانواده",
+    "test_refresh_invalid_token": "توکن تازه‌سازی نامعتبر",
+    "test_login_rate_limit": "محدودیت تلاش ورود",
+    "test_rate_limit_headers_present": "سربرگ محدودیت نرخ",
+    "test_model_versions_empty_by_default": "نسخه‌های مدل خالی",
+    "test_model_versions_rejects_viewer": "رد بیننده از نسخه‌ها",
+    "test_active_model_404_when_untrained": "مدل فعال ناموجود",
+    "test_register_and_list_model_version": "ثبت و فهرست نسخه",
+    "test_temperature_batch_dedups_hotspot_alerts": "یک هشدار برای دسته دما",
+    "test_burners_keep_latest_row_per_burner": "آخرین ردیف هر مشعل",
+    "test_temperature_map_reports_latest_timestamp": "زمان آخرین نقشه دما",
+    "test_maintenance_plan_covers_every_tube": "برنامه نگهداری همه لوله‌ها",
+    "test_digital_twin_line_order": "ترتیب واحدهای دوقلو",
+    "test_reconciliation_flags_impossible_temperature": "دمای غیرممکن",
+    "test_carbon_converts_live_burner_fuel": "تبدیل سوخت مشعل به CO2",
+    "test_benchmark_flags_tube_hotter_than_100000h_reference": "لوله داغ‌تر از مرجع صد هزار ساعت",
+    "test_plant_balance_scales_marjan_contract": "تراز قرارداد خوراک و محصول",
+    "test_catalyst_health_separates_live_wall_from_sample_images": "سلامت کاتالیست مصرفی و پنجره خرید",
+    "test_prometheus_metrics_endpoint": "خروجی پرومتئوس",
+    "test_prometheus_metrics_have_request_id_header": "شناسه درخواست روی متریک",
+    "test_request_id_propagated_from_header": "عبور شناسه درخواست",
+    "test_deep_health_returns_checks": "سلامت عمیق",
+    "test_deep_health_reports_schema_version": "نسخه طرح در سلامت عمیق",
+    "test_migrations_idempotent": "مهاجرت تکرارپذیر",
+    "test_migrations_apply_in_order": "ترتیب مهاجرت",
+    "test_json_logger_emits_valid_json": "لاگ JSON",
+    "test_rul_endpoint_handles_empty_tubes": "عمر باقیمانده بدون لوله",
+    "test_temperature_map_with_no_readings": "نقشه دما بدون قرائت",
+    "test_optimization_input_at_boundaries": "بهینه‌سازی روی مرز ورودی",
+    "test_ingest_extreme_temperature_creates_alert": "دمای شدید و هشدار",
+    "test_alerts_filter_by_status": "فیلتر وضعیت هشدار",
+    "test_read_replica_helper_falls_back_when_unset": "برگشت به پایگاه اصلی",
+    "test_openapi_has_tags": "برچسب‌های OpenAPI",
+    "test_secret_from_env": "رمز از متغیر محیط",
+    "test_secret_cached": "نهان‌سازی رمز",
+    "test_secret_default_when_missing": "رمز پیش‌فرض در حالت توسعه",
+    "test_require_secret_raises_when_missing": "الزام رمز در حالت سخت",
+    "test_require_secret_returns_value": "خواندن رمز الزامی",
+    "test_secret_from_file": "رمز از فایل",
+    "test_secret_env_takes_priority_over_file": "اولویت محیط بر فایل",
+    "test_secret_file_missing_falls_through": "فایل رمز ناموجود",
+    "test_vault_backend_disabled_without_addr": "غیرفعال بودن Vault بدون آدرس",
+    "test_sops_backend_disabled_without_sops": "غیرفعال بودن SOPS",
+    "test_backup_sqlite_online": "پشتیبان آنلاین SQLite",
+    "test_backup_dry_run_writes_nothing": "پشتیبان آزمایشی بدون نوشتن",
+    "test_backup_retention_deletes_old_sets": "حذف پشتیبان کهنه",
+    "test_restore_sqlite_with_prerestore_snapshot": "بازیابی با تصویر قبل از بازگردانی",
+    "test_restore_declines_without_yes": "رد بازیابی بدون تأیید",
+    "test_restore_latest_picks_newest": "انتخاب تازه‌ترین پشتیبان",
+}
+
+_MODULE_LABEL_FA = {
+    "module1_temperature_map": "۱. پایش دما",
+    "module2_rul": "۲. عمر باقیمانده",
+    "module3_optimization": "۳. بهینه‌سازی S/C",
+    "module4_burner_catalyst": "۴. مشعل و کاتالیست",
+}
+
+
+def _quality_paths() -> tuple[str, str]:
+    backend = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    return os.path.join(backend, "coverage.xml"), os.path.join(backend, "junit.xml")
+
+
+def _algorithm_rows(metrics: dict) -> list[dict]:
+    rows = []
+    for spec in _MODEL_ALGORITHMS:
+        data = metrics.get(spec["module"]) if isinstance(metrics, dict) else None
+        n_test = None
+        field = spec["n_test_field"]
+        if field and isinstance(data, dict) and isinstance(data.get(field), (int, float)):
+            n_test = int(data[field])
+        rows.append({
+            "module": spec["module"],
+            "module_label": _MODULE_LABEL_FA.get(spec["module"], spec["module"]),
+            "task": spec["task"],
+            "algorithm": spec["algorithm"],
+            "prep": spec["prep"],
+            "settings": spec["settings"],
+            "holdout_pct": spec["holdout_pct"],
+            "n_test": n_test,
+            "note": spec["note"],
+        })
+    return rows
+
+
+def _coverage_files(path: str) -> tuple[dict | None, list[dict]]:
+    if not os.path.exists(path):
+        return None, []
+    root = ET.parse(path).getroot()
+    summary = {
+        "line_rate": round(float(root.get("line-rate") or 0), 4),
+        "lines_valid": int(root.get("lines-valid") or 0),
+        "lines_covered": int(root.get("lines-covered") or 0),
+    }
+    files = []
+    for node in root.iter("class"):
+        filename = node.get("filename") or node.get("name") or ""
+        lines = [line for line in node if line.tag == "lines"]
+        line_nodes = []
+        for holder in lines:
+            line_nodes.extend(child for child in holder if child.tag == "line")
+        if not line_nodes:
+            line_nodes = [child for child in node.iter("line")]
+        files.append({
+            "file": filename,
+            "label": _COV_FILE_FA.get(filename, filename),
+            "line_rate": round(float(node.get("line-rate") or 0), 4),
+            "lines_valid": len(line_nodes),
+            "lines_covered": sum(1 for line in line_nodes if int(line.get("hits") or 0) > 0),
+        })
+    return summary, files
+
+
+def _junit_tests(path: str) -> list[dict]:
+    if not os.path.exists(path):
+        return []
+    root = ET.parse(path).getroot()
+    rows = []
+    for case in root.iter("testcase"):
+        classname = case.get("classname") or ""
+        file_stem = next((part for part in classname.split(".") if part.startswith("test_")), "")
+        filename = f"{file_stem}.py" if file_stem else classname
+        name = case.get("name") or ""
+        if case.find("failure") is not None:
+            status = "failed"
+        elif case.find("error") is not None:
+            status = "error"
+        elif case.find("skipped") is not None:
+            status = "skipped"
+        else:
+            status = "passed"
+        try:
+            elapsed = round(float(case.get("time") or 0), 3)
+        except ValueError:
+            elapsed = 0.0
+        rows.append({
+            "name": name,
+            "title": _TEST_TITLES.get(name, name),
+            "file": filename,
+            "group": _TEST_GROUP.get(filename, filename),
+            "status": status,
+            "time_s": elapsed,
+        })
+    return rows
+
+
+def _suite_report() -> dict:
+    """Last pytest run and line coverage of the mrto package.
+
+    Files are written by pytest into backend/. Missing files stay empty
+    instead of inventing a pass rate.
+    """
+    coverage_path, junit_path = _quality_paths()
+    summary, files = _coverage_files(coverage_path)
+    tests = _junit_tests(junit_path)
+    passed = sum(1 for row in tests if row["status"] == "passed")
+    failed = sum(1 for row in tests if row["status"] in ("failed", "error"))
+    skipped = sum(1 for row in tests if row["status"] == "skipped")
+    return {
+        "available": summary is not None or bool(tests),
+        "gate": 0.70,
+        "line_rate": None if summary is None else summary["line_rate"],
+        "lines_valid": None if summary is None else summary["lines_valid"],
+        "lines_covered": None if summary is None else summary["lines_covered"],
+        "tests_total": len(tests),
+        "tests_passed": passed,
+        "tests_failed": failed,
+        "tests_skipped": skipped,
+        "duration_s": round(sum(row["time_s"] for row in tests), 1),
+        "files": files,
+        "tests": tests,
+    }
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -1476,6 +2082,21 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         """Live burner CO2 plus furnace fuel and carbon intensity at the Module 3 optimum."""
         return _carbon_view(app.state.db_path)
 
+    @app.get("/api/v1/plant-balance")
+    def plant_balance(_user: dict = Depends(current_user)) -> dict:
+        """Scale reformer specific energy onto Marjan's methanol and gas contract."""
+        return _plant_balance(app.state.db_path)
+
+    @app.get("/api/v1/production-plan")
+    def production_plan(_user: dict = Depends(current_user)) -> dict:
+        """Production rate under live prices, with dollar, gold and demand shocks."""
+        return _production_plan(app.state.db_path)
+
+    @app.get("/api/v1/catalyst-health")
+    def catalyst_health(_user: dict = Depends(current_user)) -> dict:
+        """Inspection signs, remaining catalyst life, and the purchase window."""
+        return _catalyst_health(app.state.db_path)
+
     @app.get("/api/v1/benchmark")
     def benchmark(_user: dict = Depends(current_user)) -> dict:
         """Score the live furnace against published reformer, energy, and CO2 practice."""
@@ -1566,6 +2187,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     out[name] = {"error": str(e)}
             else:
                 out[name] = None
+        out["algorithms"] = _algorithm_rows(out)
+        out["suite"] = _suite_report()
         return out
 
     @app.post("/api/v1/ingest/temperature",
